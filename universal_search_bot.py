@@ -289,3 +289,6 @@ async def main():
     except Exception as e:
         logger.error(f"Ошибка бота: {e}")
 
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
