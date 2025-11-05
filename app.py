@@ -7,8 +7,11 @@ async def handle(request):
     return web.Response(text="🚀 Новостной бот работает! Отправьте сообщение в Telegram боту.")
 
 async def start_bot():
-    """Запускает бота в том же цикле событий"""
-    await universal_search_bot.main()
+    """Запускает бота в фоне"""
+    try:
+        await universal_search_bot.main()
+    except Exception as e:
+        print(f"❌ Ошибка бота: {e}")
 
 async def init_app():
     """Инициализирует приложение"""

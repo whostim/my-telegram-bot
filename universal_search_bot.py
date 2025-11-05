@@ -1,294 +1,599 @@
 import os
 import logging
+import asyncio
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 import urllib.parse
+from bs4 import BeautifulSoup
+import json
+import re
+import random
+from datetime import datetime, timedelta
 
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO)
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Загрузка переменных окружения
+load_dotenv()
+
+# Получение токена бота
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
-    print("❌ BOT_TOKEN не найден")
+    logger.error("❌ BOT_TOKEN не найден в .env файле")
     exit(1)
 
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Создание клавиатуры
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🔍 Поиск в интернете"), KeyboardButton(text="📢 Поиск в Telegram")],
-        [KeyboardButton(text="⚡ Быстрый поиск ЭПР"), KeyboardButton(text="🌐 Все поисковики")]
+        [KeyboardButton(text="🔍 Поиск новостей ЭПР"), KeyboardButton(text="🌍 Международные источники")],
+        [KeyboardButton(text="⚡ Свежие новости"), KeyboardButton(text="📊 Быстрый поиск")]
     ],
     resize_keyboard=True
 )
 
-class UniversalSearcher:
-    @staticmethod
-    def search_internet(query):
-        """Поиск по всему интернету"""
-        encoded_query = urllib.parse.quote(query)
+class ImprovedNewsSearcher:
+    def __init__(self):
+        self.session = None
+        self.cache = {}
+        self.cache_timeout = 300
         
-        searches = [
-            {
-                "name": "🌐 Google",
-                "url": f"https://www.google.com/search?q={encoded_query}+ЭПР+регуляторная+песочница+Россия",
-                "description": "Поиск по всем сайтам в Google"
-            },
-            {
-                "name": "🔍 Яндекс",
-                "url": f"https://yandex.ru/search/?text={encoded_query}+ЭПР+регуляторная+песочница",
-                "description": "Поиск по русскоязычным сайтам"
-            },
-            {
-                "name": "📰 Google News",
-                "url": f"https://news.google.com/search?q={encoded_query}+ЭПР+Russia&hl=ru-RU&gl=RU&ceid=RU:ru",
-                "description": "Поиск в новостях"
-            },
-            {
-                "name": "📚 Яндекс.Новости",
-                "url": f"https://yandex.ru/news/search?text={encoded_query}+ЭПР",
-                "description": "Поиск в новостях"
-            },
-            {
-                "name": "🦆 DuckDuckGo",
-                "url": f"https://duckduckgo.com/?q={encoded_query}+ЭПР+Россия",
-                "description": "Анонимный поиск"
-            },
-            {
-                "name": "🔎 Bing",
-                "url": f"https://www.bing.com/search?q={encoded_query}+ЭПР+Russia",
-                "description": "Поиск от Microsoft"
-            }
+        # Черный список русскоязычных доменов для международного поиска
+        self.russian_domains = [
+            'rbc.ru', 'vedomosti.ru', 'kommersant.ru', 'ria.ru', 'tass.ru', 'rt.com',
+            'lenta.ru', 'gazeta.ru', 'iz.ru', 'mk.ru', 'aif.ru', 'rg.ru', 'vesti.ru',
+            'newsru.com', 'fontanka.ru', 'ng.ru', 'echo.msk.ru', 'bfm.ru', 'forbes.ru',
+            'vc.ru', 'rb.ru', 'banki.ru', 'cbr.ru', 'rosfinmonitoring.ru', 'government.ru',
+            'kremlin.ru', 'minfin.ru', 'yandex.ru', 'mail.ru', 'rambler.ru'
         ]
-        return searches
-
-    @staticmethod
-    def search_telegram(query):
-        """Поиск по всему Telegram"""
-        encoded_query = urllib.parse.quote(query)
+    
+    async def get_session(self):
+        if self.session is None:
+            timeout = aiohttp.ClientTimeout(total=15, connect=5, sock_read=10)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+        return self.session
+    
+    def get_cached_results(self, query):
+        cache_key = f"search_{hash(query)}"
+        if cache_key in self.cache:
+            cache_time, results = self.cache[cache_key]
+            if datetime.now() - cache_time < timedelta(seconds=self.cache_timeout):
+                return results
+        return None
+    
+    def set_cached_results(self, query, results):
+        cache_key = f"search_{hash(query)}"
+        self.cache[cache_key] = (datetime.now(), results)
+    
+    def is_russian_domain(self, url):
+        try:
+            domain = urllib.parse.urlparse(url).netloc.lower()
+            return any(russian_domain in domain for russian_domain in self.russian_domains)
+        except:
+            return False
+    
+    async def translate_query(self, query):
+        translation_dict = {
+            'эпр': 'EPR',
+            'экспериментальный': 'experimental',
+            'правовой': 'legal',
+            'режим': 'regime',
+            'регуляторная': 'regulatory',
+            'песочница': 'sandbox',
+            'финансы': 'finance',
+            'финтех': 'fintech',
+            'банк': 'bank',
+            'россия': 'Russia',
+            'рф': 'Russian Federation',
+            'цифровой': 'digital',
+            'экономика': 'economy',
+            'инновации': 'innovations',
+            'технологии': 'technologies',
+            'закон': 'law',
+            'правительство': 'government',
+            'регулирование': 'regulation'
+        }
         
-        searches = [
-            {
-                "name": "📢 Telegram Global Search",
-                "url": f"https://t.me/search?q={encoded_query}",
-                "description": "Поиск по всем публичным каналам Telegram"
-            },
-            {
-                "name": "🔍 Telegram по каналам",
-                "url": f"https://t.me/search?q={encoded_query}+ЭПР",
-                "description": "Поиск по каналам с тегом ЭПР"
-            },
-            {
-                "name": "💬 Telegram в чатах",
-                "url": f"https://t.me/search?q={encoded_query}+песочница",
-                "description": "Поиск в чатах и каналах"
-            },
-            {
-                "name": "🌍 Telegram Web",
-                "url": f"https://web.telegram.org/k/#search?query={encoded_query}",
-                "description": "Веб-версия поиска в Telegram"
+        words = query.lower().split()
+        translated_words = []
+        
+        for word in words:
+            clean_word = re.sub(r'[^\w\s]', '', word)
+            if clean_word in translation_dict:
+                translated_words.append(translation_dict[clean_word])
+            else:
+                translated_words.append(clean_word)
+        
+        translated_query = ' '.join(translated_words)
+        
+        if any(word in query.lower() for word in ['эпр', 'регуляторная', 'песочница']):
+            translated_query += " Russia"
+        
+        return translated_query
+    
+    async def search_yandex_news_direct(self, query):
+        try:
+            session = await self.get_session()
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://yandex.ru/news/search?text={encoded_query}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
-        ]
-        return searches
-
-    @staticmethod
-    def search_epr_quick():
-        """Быстрый поиск по ЭПР"""
-        searches = [
-            {
-                "name": "🚀 Все об ЭПР",
-                "url": "https://www.google.com/search?q=ЭПР+экспериментальный+правовой+режим+Россия+2024",
-                "description": "Полный поиск по теме ЭПР"
-            },
-            {
-                "name": "📰 Новости ЭПР",
-                "url": "https://news.google.com/search?q=ЭПР+Россия+2024&hl=ru-RU&gl=RU&ceid=RU:ru",
-                "description": "Свежие новости об ЭПР"
-            },
-            {
-                "name": "📢 Telegram ЭПР",
-                "url": "https://t.me/search?q=ЭПР+экспериментальный+правовой+режим",
-                "description": "Поиск в Telegram по ЭПР"
-            },
-            {
-                "name": "💼 Регуляторные песочницы",
-                "url": "https://www.google.com/search?q=регуляторная+песочница+Россия+2024+ЭПР",
-                "description": "Поиск по регуляторным песочницам"
-            },
-            {
-                "name": "🔍 Яндекс ЭПР",
-                "url": "https://yandex.ru/search/?text=ЭПР+экспериментальный+правовой+режим+2024",
-                "description": "Поиск в Яндексе"
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    articles = []
+                    
+                    news_cards = soup.find_all('article', class_='mg-card')[:10]
+                    
+                    for card in news_cards:
+                        try:
+                            title_elem = card.find('h2', class_='mg-card__title') or card.find('a', class_='mg-card__link')
+                            if not title_elem:
+                                continue
+                                
+                            title = title_elem.get_text().strip()
+                            link = title_elem.get('href', '')
+                            
+                            if link.startswith('https://news.yandex.ru/yandsearch?'):
+                                match = re.search(r'cl4url=([^&]+)', link)
+                                if match:
+                                    link = urllib.parse.unquote(match.group(1))
+                            elif link.startswith('/'):
+                                link = f"https://yandex.ru{link}"
+                            
+                            source_elem = card.find('span', class_='mg-card-source__source')
+                            time_elem = card.find('span', class_='mg-card-source__time')
+                            desc_elem = card.find('div', class_='mg-card__annotation')
+                            
+                            # Проверяем, что ссылка рабочая
+                            if link and not any(domain in link for domain in ['google.com/search', 'yandex.ru/search']):
+                                articles.append({
+                                    'title': title,
+                                    'url': link,
+                                    'source': source_elem.get_text().strip() if source_elem else 'Яндекс.Новости',
+                                    'date': time_elem.get_text().strip() if time_elem else '',
+                                    'description': desc_elem.get_text().strip() if desc_elem else '',
+                                    'language': 'ru'
+                                })
+                        except Exception as e:
+                            logger.debug(f"Ошибка парсинга карточки Яндекс: {e}")
+                            continue
+                    
+                    return articles
+                return []
+        except Exception as e:
+            logger.debug(f"Ошибка Яндекс.Новостей: {e}")
+            return []
+    
+    async def search_bing_news_improved(self, query, market='ru-RU', exclude_russian=False):
+        try:
+            session = await self.get_session()
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://www.bing.com/news/search?q={encoded_query}&cc={market}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    articles = []
+                    
+                    selectors = [
+                        'div.news-card',
+                        'div.topic',
+                        'div.newsitem',
+                        'article.news-card',
+                        'div[class*="news"]'
+                    ]
+                    
+                    for selector in selectors:
+                        news_cards = soup.select(selector)[:10]
+                        for card in news_cards:
+                            try:
+                                title_elem = (card.find('a', class_='title') or 
+                                            card.find('a', class_=re.compile('title')) or
+                                            card.find('h2') or
+                                            card.find('h3') or
+                                            card.find('a', attrs={'href': True}))
+                                
+                                if title_elem and title_elem.get('href'):
+                                    title = title_elem.get_text().strip()
+                                    url = title_elem.get('href')
+                                    
+                                    if url.startswith('/'):
+                                        url = f"https://www.bing.com{url}"
+                                    
+                                    if 'bing.com/news/search' in url:
+                                        continue
+                                    
+                                    if exclude_russian and self.is_russian_domain(url):
+                                        continue
+                                    
+                                    source_elem = card.find(['div', 'span'], class_=re.compile('source|author'))
+                                    time_elem = card.find(['div', 'span'], class_=re.compile('time|date'))
+                                    
+                                    # Проверяем рабочую ссылку
+                                    if url and not any(search_domain in url for search_domain in ['google.com/search', 'bing.com/search']):
+                                        articles.append({
+                                            'title': title,
+                                            'url': url,
+                                            'source': source_elem.get_text().strip() if source_elem else 'Bing News',
+                                            'date': time_elem.get_text().strip() if time_elem else '',
+                                            'language': 'ru' if market == 'ru-RU' else 'en'
+                                        })
+                            except Exception:
+                                continue
+                        if articles:
+                            break
+                    
+                    return articles
+                return []
+        except Exception as e:
+            logger.debug(f"Ошибка Bing News: {e}")
+            return []
+    
+    async def search_duckduckgo_improved(self, query, exclude_russian=False):
+        try:
+            session = await self.get_session()
+            encoded_query = urllib.parse.quote(query)
+            url = f"https://html.duckduckgo.com/html/?q={encoded_query}+news"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    articles = []
+                    results = soup.find_all('div', class_='result')[:12]
+                    
+                    for result in results:
+                        try:
+                            title_elem = result.find('a', class_='result__a')
+                            if title_elem:
+                                title = title_elem.get_text().strip()
+                                url = title_elem.get('href', '')
+                                
+                                if 'duckduckgo.com' in url:
+                                    match = re.search(r'uddg=([^&]+)', url)
+                                    if match:
+                                        url = urllib.parse.unquote(match.group(1))
+                                
+                                if any(domain in url for domain in ['google.com/search', 'bing.com/search', 'yandex.ru/search']):
+                                    continue
+                                
+                                if exclude_russian and self.is_russian_domain(url):
+                                    continue
+                                
+                                snippet_elem = result.find('a', class_='result__snippet')
+                                
+                                # Проверяем рабочую ссылку
+                                if url and url.startswith('http'):
+                                    articles.append({
+                                        'title': title,
+                                        'url': url,
+                                        'source': 'DuckDuckGo',
+                                        'description': snippet_elem.get_text().strip()[:150] + '...' if snippet_elem else '',
+                                        'language': 'en'
+                                    })
+                        except Exception:
+                            continue
+                    
+                    return articles
+                return []
+        except Exception as e:
+            logger.debug(f"Ошибка DuckDuckGo: {e}")
+            return []
+    
+    async def universal_search(self, query, search_type="all"):
+        cache_key = f"{search_type}_{query}"
+        cached_results = self.get_cached_results(cache_key)
+        if cached_results:
+            logger.info("✅ Используем кэшированные результаты")
+            return cached_results
+        
+        all_results = []
+        
+        try:
+            if search_type in ["all", "russian"]:
+                logger.info(f"🔍 Поиск в российских источниках: {query}")
+                
+                yandex_results = await self.search_yandex_news_direct(f"{query} ЭПР")
+                all_results.extend(yandex_results)
+                logger.info(f"✅ Яндекс.Новости: {len(yandex_results)} статей")
+                
+                bing_ru_results = await self.search_bing_news_improved(f"{query} ЭПР", 'ru-RU')
+                all_results.extend(bing_ru_results)
+                logger.info(f"✅ Bing Россия: {len(bing_ru_results)} статей")
+            
+            if search_type in ["all", "international"]:
+                logger.info(f"🌍 Поиск в международных источниках: {query}")
+                
+                translated_query = await self.translate_query(query)
+                
+                duckduckgo_results = await self.search_duckduckgo_improved(translated_query, exclude_russian=True)
+                all_results.extend(duckduckgo_results)
+                logger.info(f"✅ DuckDuckGo: {len(duckduckgo_results)} статей")
+                
+                bing_en_results = await self.search_bing_news_improved(translated_query, 'en-US', exclude_russian=True)
+                all_results.extend(bing_en_results)
+                logger.info(f"✅ Bing International: {len(bing_en_results)} статей")
+        
+        except Exception as e:
+            logger.error(f"❌ Ошибка в универсальном поиске: {e}")
+        
+        # Фильтруем результаты - удаляем ссылки на поисковые системы и проверяем URL
+        filtered_results = []
+        for result in all_results:
+            if result and result.get('url'):
+                url = result['url'].lower()
+                if any(search_domain in url for search_domain in [
+                    'google.com/search', 
+                    'bing.com/search',
+                    'yandex.ru/search',
+                    'news.google.com',
+                    'news.yandex.ru/yandsearch'
+                ]):
+                    continue
+                # Проверяем что URL выглядит как реальная статья
+                if url.startswith('http') and len(url) > 20:
+                    filtered_results.append(result)
+        
+        # Удаляем дубликаты
+        seen_urls = set()
+        unique_results = []
+        for result in filtered_results:
+            if result['url'] not in seen_urls:
+                seen_urls.add(result['url'])
+                unique_results.append(result)
+        
+        self.set_cached_results(cache_key, unique_results[:10])
+        
+        logger.info(f"📊 Итоговые результаты: {len(unique_results)} статей")
+        return unique_results[:10]
+    
+    async def get_fresh_news_today(self):
+        """Поиск СВЕЖИХ новостей за сегодня"""
+        cache_key = "fresh_news_today"
+        cached_results = self.get_cached_results(cache_key)
+        if cached_results:
+            return cached_results
+        
+        logger.info("🔍 Поиск свежих новостей за сегодня...")
+        
+        # Актуальные запросы для поиска свежих новостей
+        today_queries = [
+            "ЭПР сегодня",
+            "ЭПР новости сегодня",
+            "регуляторная песочница сегодня",
+            "экспериментальный правовой режим новости"
         ]
-        return searches
+        
+        all_articles = []
+        
+        for query in today_queries:
+            try:
+                logger.info(f"📢 Поиск свежих новостей: {query}")
+                
+                # Российские источники
+                yandex_results = await self.search_yandex_news_direct(query)
+                bing_results = await self.search_bing_news_improved(query, 'ru-RU')
+                
+                all_articles.extend(yandex_results)
+                all_articles.extend(bing_results)
+                
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка при поиске свежих новостей: {e}")
+                continue
+        
+        # Фильтруем результаты
+        filtered_articles = []
+        for article in all_articles:
+            if article and article.get('url'):
+                url = article['url'].lower()
+                # Исключаем поисковые системы и проверяем URL
+                if not any(search_domain in url for search_domain in [
+                    'google.com/search', 'bing.com/search', 'yandex.ru/search'
+                ]) and url.startswith('http') and len(url) > 20:
+                    filtered_articles.append(article)
+        
+        # Удаляем дубликаты
+        seen_urls = set()
+        unique_articles = []
+        for article in filtered_articles:
+            if article['url'] not in seen_urls:
+                seen_urls.add(article['url'])
+                unique_articles.append(article)
+        
+        # Если новостей мало, делаем дополнительный поиск по общим запросам
+        if len(unique_articles) < 4:
+            logger.info("🔍 Дополнительный поиск свежих новостей...")
+            backup_queries = ["ЭПР", "регуляторная песочница Россия"]
+            for query in backup_queries:
+                try:
+                    backup_results = await self.universal_search(query, "all")
+                    for article in backup_results:
+                        if article['url'] not in seen_urls:
+                            seen_urls.add(article['url'])
+                            unique_articles.append(article)
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"❌ Ошибка дополнительного поиска: {e}")
+        
+        # Ограничиваем количество и кэшируем
+        final_articles = unique_articles[:8]
+        self.set_cached_results(cache_key, final_articles)
+        
+        logger.info(f"✅ Найдено свежих новостей: {len(final_articles)}")
+        return final_articles
+    
+    async def close(self):
+        if self.session:
+            await self.session.close()
 
-searcher = UniversalSearcher()
+# Инициализация поисковика
+news_searcher = ImprovedNewsSearcher()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "🌍 **Универсальный поисковый бот**\n\n"
-        "Я ищу по ВСЕМУ интернету и ВСЕМУ Telegram!\n\n"
-        "🔍 **Что я умею:**\n"
-        "• Искать по всем сайтам интернета\n"
-        "• Искать по всем каналам Telegram\n"
-        "• Использовать все поисковые системы\n"
-        "• Находить самую актуальную информацию\n\n"
-        "💡 **Просто напишите что ищете!**",
+        "🌐 Универсальный поиск новостей об ЭПР\n\n"
+        "• 🔍 Поиск новостей ЭПР - российские и международные источники\n"
+        "• 🌍 Международные источники - только зарубежные СМИ\n"  
+        "• ⚡ Свежие новости - актуальные статьи за сегодня\n"
+        "• 📊 Быстрый поиск - мгновенные результаты\n\n"
+        "Просто напишите что ищете!",
         reply_markup=main_keyboard
     )
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer(
-        "🤖 **Помощь по универсальному поиску:**\n\n"
-        "**Команды:**\n"
-        "/start - начать работу\n"
-        "/search - поиск в интернете\n"
-        "/telegram - поиск в Telegram\n"
-        "/epr - быстрый поиск по ЭПР\n"
-        "/help - помощь\n\n"
-        "**Кнопки:**\n"
-        "• 🔍 Поиск в интернете - поиск по всем сайтам\n"
-        "• 📢 Поиск в Telegram - поиск по всему TG\n"
-        "• ⚡ Быстрый поиск ЭПР - готовые запросы по ЭПР\n"
-        "• 🌐 Все поисковики - все системы поиска\n\n"
-        "💡 **Просто напишите ЛЮБОЙ запрос в чат!**"
-    )
+    help_text = """
+📖 Универсальный поиск новостей об ЭПР
 
-@dp.message(lambda message: message.text == "🔍 Поиск в интернете")
-async def search_internet_menu(message: types.Message):
-    await message.answer(
-        "🔍 **Поиск по всему интернету**\n\n"
-        "Напишите запрос для поиска:\n\n"
-        "Примеры:\n"
-        "• `ЭПР новости`\n"
-        "• `регуляторная песочница`\n"
-        "• `правовой эксперимент 2024`\n"
-        "• `любой ваш запрос`\n\n"
-        "🌐 Я найду по всем поисковым системам!",
-        parse_mode='Markdown'
-    )
+🔍 Поиск новостей ЭПР - российские и международные источники
+🌍 Международные источники - только зарубежные СМИ
+⚡ Свежие новости - поиск актуальных статей за сегодня
+📊 Быстрый поиск - мгновенные результаты по всем источникам
 
-@dp.message(lambda message: message.text == "📢 Поиск в Telegram")
-async def search_telegram_menu(message: types.Message):
-    await message.answer(
-        "📢 **Поиск по всему Telegram**\n\n"
-        "Напишите запрос для поиска в Telegram:\n\n"
-        "Примеры:\n"
-        "• `ЭПР обсуждение`\n"
-        "• `песочница регуляторная`\n"
-        "• `цифровая экономика`\n"
-        "• `любой запрос`\n\n"
-        "💬 Я найду по всем публичным каналам TG!",
-        parse_mode='Markdown'
-    )
+💡 Примеры запросов:
+• ЭПР в финансах
+• регуляторная песочница
+• новые правила ЭПР
+• Russia fintech regulation
 
-@dp.message(lambda message: message.text == "⚡ Быстрый поиск ЭПР")
-async def quick_search_epr(message: types.Message):
-    searches = searcher.search_epr_quick()
+⚡ Кнопка 'Свежие новости' ищет самые актуальные статьи за сегодня!
+"""
+    await message.answer(help_text)
+
+@dp.message(lambda message: message.text == "🔍 Поиск новостей ЭПР")
+async def search_epr_news(message: types.Message):
+    await message.answer("🔍 Напишите запрос для поиска новостей об ЭПР (включая российские источники):")
+
+@dp.message(lambda message: message.text == "🌍 Международные источники")
+async def international_sources(message: types.Message):
+    await message.answer("🌍 Напишите запрос для поиска в международных источниках. Исключены все русскоязычные сайты.")
+
+@dp.message(lambda message: message.text == "⚡ Свежие новости")
+async def fresh_news(message: types.Message):
+    await message.answer("⚡ Ищу самые свежие новости об ЭПР за сегодня...")
     
-    response = "⚡ **Быстрый поиск по ЭПР:**\n\n"
-    
-    for i, search in enumerate(searches, 1):
-        response += f"**{i}. {search['name']}**\n"
-        response += f"🔗 [Открыть поиск]({search['url']})\n"
-        response += f"📝 {search['description']}\n\n"
-    
-    await message.answer(response, parse_mode='Markdown', disable_web_page_preview=False)
+    try:
+        articles = await news_searcher.get_fresh_news_today()
+        
+        if articles:
+            response = "⚡ Самые свежие новости об ЭПР:\n\n"
+            
+            for i, article in enumerate(articles, 1):
+                response += f"{i}. {article['title']}\n"
+                response += f"   📰 {article['source']}\n"
+                if article.get('date'):
+                    response += f"   📅 {article['date']}\n"
+                response += f"   🔗 {article['url']}\n\n"
+                
+                if len(response) > 3500:
+                    response += "... (показаны первые статьи)"
+                    break
+            
+            response += "💡 Все ссылки ведут на реальные новостные статьи"
+        else:
+            response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
+            response += "💡 Попробуйте использовать поиск по конкретному запросу."
+        
+        await message.answer(response)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска свежих новостей: {e}")
+        await message.answer("❌ Ошибка при поиске свежих новостей. Попробуйте позже.")
 
-@dp.message(lambda message: message.text == "🌐 Все поисковики")
-async def all_search_engines(message: types.Message):
-    await message.answer(
-        "🌐 **Все поисковые системы:**\n\n"
-        "Напишите запрос для поиска во ВСЕХ системах:\n\n"
-        "• Google, Яндекс, Bing, DuckDuckGo\n"
-        "• Google News, Яндекс.Новости\n"
-        "• Telegram Global Search\n\n"
-        "🚀 Максимальный охват поиска!",
-        parse_mode='Markdown'
-    )
-
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    await search_internet_menu(message)
-
-@dp.message(Command("telegram"))
-async def cmd_telegram(message: types.Message):
-    await search_telegram_menu(message)
-
-@dp.message(Command("epr"))
-async def cmd_epr(message: types.Message):
-    await quick_search_epr(message)
+@dp.message(lambda message: message.text == "📊 Быстрый поиск")
+async def quick_search(message: types.Message):
+    await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам:")
 
 @dp.message()
 async def handle_text(message: types.Message):
     user_text = message.text.strip()
     
-    # Игнорируем команды и кнопки
-    buttons = ["🔍 Поиск в интернете", "📢 Поиск в Telegram", "⚡ Быстрый поиск ЭПР", "🌐 Все поисковики"]
+    buttons = ["🔍 Поиск новостей ЭПР", "🌍 Международные источники", "⚡ Свежие новости", "📊 Быстрый поиск"]
     if user_text.startswith('/') or user_text in buttons:
         return
     
-    await message.answer(f"🔍 Ищу по всему интернету и Telegram: '{user_text}'...")
+    await message.answer(f"🔍 Ищу новости по запросу: '{user_text}'...")
     
     try:
-        # Поиск в интернете
-        internet_searches = searcher.search_internet(user_text)
-        # Поиск в Telegram
-        telegram_searches = searcher.search_telegram(user_text)
+        if any(word in user_text.lower() for word in ['russia', 'russian', 'international']):
+            search_type = "international"
+            response_note = "🌍 Поиск только в международных источниках\n"
+        else:
+            search_type = "all"
+            response_note = "🔍 Поиск по всем источникам\n"
         
-        response = f"🔍 **Результаты поиска по '{user_text}':**\n\n"
+        articles = await news_searcher.universal_search(user_text, search_type)
         
-        response += "**🌐 Поиск в интернете:**\n"
-        for i, search in enumerate(internet_searches[:3], 1):
-            response += f"{i}. **{search['name']}**\n"
-            response += f"🔗 [Открыть]({search['url']})\n"
-            response += f"📝 {search['description']}\n\n"
+        if articles:
+            russian_articles = [a for a in articles if a.get('language') == 'ru']
+            english_articles = [a for a in articles if a.get('language') == 'en']
+            
+            response = f"🔍 Результаты поиска по '{user_text}':\n\n{response_note}\n"
+            
+            if russian_articles and search_type != "international":
+                response += "🇷🇺 Российские источники:\n\n"
+                for i, article in enumerate(russian_articles[:4], 1):
+                    response += f"{i}. {article['title']}\n"
+                    response += f"   📰 {article['source']}\n"
+                    response += f"   🔗 {article['url']}\n\n"
+            
+            if english_articles:
+                response += "🌍 Международные источники:\n\n"
+                for i, article in enumerate(english_articles[:4], 1):
+                    response += f"{i}. {article['title']}\n"
+                    response += f"   📰 {article['source']}\n"
+                    response += f"   🔗 {article['url']}\n\n"
+            
+            response += f"📊 Найдено статей: {len(articles)}\n"
+            response += "✅ Все ссылки ведут на реальные новостные статьи"
+            
+        else:
+            response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+            response += "💡 Попробуйте изменить формулировку запроса."
         
-        response += "**📢 Поиск в Telegram:**\n"
-        for i, search in enumerate(telegram_searches[:2], 1):
-            response += f"{i}. **{search['name']}**\n"
-            response += f"🔗 [Открыть]({search['url']})\n"
-            response += f"📝 {search['description']}\n\n"
-        
-        response += f"💡 *Найдены ссылки для поиска в {len(internet_searches) + len(telegram_searches)} системах*"
-        
-        await message.answer(response, parse_mode='Markdown', disable_web_page_preview=False)
+        await message.answer(response)
         
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await message.answer(
-            "❌ Ошибка при формировании поиска.\n\n"
-            "💡 **Прямые ссылки на поиск:**\n"
-            f"• [Google](https://www.google.com/search?q={urllib.parse.quote(user_text)})\n"
-            f"• [Яндекс](https://yandex.ru/search/?text={urllib.parse.quote(user_text)})\n"
-            f"• [Telegram](https://t.me/search?q={urllib.parse.quote(user_text)})\n\n"
-            "🚀 Используйте эти ссылки напрямую!",
-            parse_mode='Markdown',
-            disable_web_page_preview=False
-        )
+        logger.error(f"❌ Ошибка поиска: {e}")
+        await message.answer(f"❌ Ошибка при поиске. Попробуйте другой запрос.")
 
 async def main():
-    logger.info("🌍 Универсальный поисковый бот запускается...")
+    logger.info("🚀 Запуск улучшенного поискового бота...")
     
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Вебхук удален")
-    except Exception as e:
-        logger.error(f"Ошибка вебхука: {e}")
-    
-    try:
         await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Ошибка бота: {e}")
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+        logger.error(f"❌ Ошибка при запуске бота: {e}")
+    finally:
+        await news_searcher.close()
