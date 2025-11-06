@@ -13,6 +13,39 @@ import re
 import random
 from datetime import datetime, timedelta
 
+def format_date(date_str):
+    """Форматирует дату в формат дд.мм.гггг"""
+    if not date_str:
+        return ""
+    
+    try:
+        # Пробуем разные форматы дат
+        from datetime import datetime
+        formats_to_try = [
+            '%Y-%m-%d',
+            '%d.%m.%Y', 
+            '%d/%m/%Y',
+            '%m/%d/%Y',
+            '%B %d, %Y',
+            '%b %d, %Y',
+            '%d %B %Y',
+            '%d %b %Y',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%d %H:%M:%S'
+        ]
+        
+        for fmt in formats_to_try:
+            try:
+                dt = datetime.strptime(date_str.strip(), fmt)
+                return dt.strftime('%d.%m.%Y')
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    
+    # Если не удалось распарсить, возвращаем исходную строку
+    return date_str
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -462,10 +495,10 @@ news_searcher = ImprovedNewsSearcher()
 async def cmd_start(message: types.Message):
     await message.answer(
         "🌐 Универсальный поиск новостей об ЭПР\n\n"
-        "🔍 Поиск новостей ЭПР – российские и международные источники\n"
-        "🌍 Международные источники – только зарубежные СМИ\n"  
-        "⚡ Свежие новости – актуальные статьи\n"
-        "📊 Быстрый поиск – мгновенные результаты\n\n"
+        "🔍 Поиск новостей ЭПР - российские и международные источники\n"
+        "🌍 Международные источники - только зарубежные СМИ\n"  
+        "⚡ Свежие новости - актуальные статьи\n"
+        "📊 Быстрый поиск - мгновенные результаты\n\n"
         "Просто напишите что ищете!",
         reply_markup=main_keyboard
     )
@@ -492,7 +525,7 @@ async def cmd_help(message: types.Message):
 
 @dp.message(lambda message: message.text == "🔍 Поиск новостей")
 async def search_epr_news(message: types.Message):
-    await message.answer("🔍 Напишите запрос для поиска новостей):")
+    await message.answer("🔍 Напишите запрос для поиска новостей:")
 
 @dp.message(lambda message: message.text == "🌍 Международные источники")
 async def international_sources(message: types.Message):
@@ -512,7 +545,8 @@ async def fresh_news(message: types.Message):
                 response += f"{i}. {article['title']}\n"
                 response += f"   📰 {article['source']}\n"
                 if article.get('date'):
-                    response += f"   📅 {article['date']}\n"
+		  formatted_date = format_date(article['date'])
+		  response += f"   📅 {formatted_date}\n"	
                 response += f"   🔗 {article['url']}\n\n"
                 
                 if len(response) > 3500:
@@ -538,7 +572,7 @@ async def quick_search(message: types.Message):
 async def handle_text(message: types.Message):
     user_text = message.text.strip()
     
-    buttons = ["🔍 Поиск новостей", "🌍 Международные источники", "⚡ Свежие новости", "📊 Быстрый поиск"]
+    buttons = ["🔍 Поиск новостей ЭПР", "🌍 Международные источники", "⚡ Свежие новости", "📊 Быстрый поиск"]
     if user_text.startswith('/') or user_text in buttons:
         return
     
@@ -565,6 +599,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(russian_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
+		    if article.get('date'):
+       		         formatted_date = format_date(article['date'])
+       			 response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             if english_articles:
@@ -572,6 +609,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(english_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
+		    if article.get('date'):
+       			 formatted_date = format_date(article['date'])
+       			 response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             response += f"📊 Найдено статей: {len(articles)}\n"
