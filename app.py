@@ -7,11 +7,14 @@ from aiohttp import web
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Глобальная переменная для отслеживания состояния бота
+bot_task = None
+
 async def handle(request):
     return web.Response(text="🚀 Бот работает! Используйте Telegram бота.")
 
 async def start_bot():
-    """Запускает бота в отдельном процессе"""
+    """Запускает бота"""
     try:
         import universal_search_bot
         logger.info("Starting Telegram bot...")
@@ -19,19 +22,28 @@ async def start_bot():
     except Exception as e:
         logger.error(f"Bot error: {e}")
 
-async def start_background_tasks(app):
-    app['bot_task'] = asyncio.create_task(start_bot())
+async def on_startup(app):
+    """Запускается при старте приложения"""
+    global bot_task
+    if bot_task is None:
+        bot_task = asyncio.create_task(start_bot())
 
-async def cleanup_background_tasks(app):
-    app['bot_task'].cancel()
-    await app['bot_task']
+async def on_shutdown(app):
+    """Запускается при остановке приложения"""
+    global bot_task
+    if bot_task and not bot_task.done():
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
 
 def create_app():
     app = web.Application()
     app.router.add_get('/', handle)
     
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
     
     return app
 
