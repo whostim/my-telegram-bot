@@ -17,6 +17,24 @@ from datetime import datetime, timedelta
 def format_date(date_str):
     if not date_str:
         return ""
+    
+    # Убираем относительные форматы времени
+    relative_patterns = [
+        r'\d+\s*(мес|месяц|месяцев|месяца)',
+        r'\d+\s*(год|года|лет)',
+        r'\d+\s*(день|дня|дней)',
+        r'\d+\s*(недел|недели|недель)',
+        r'\d+\s*(час|часа|часов)',
+        r'\d+\s*(минут|минуты)',
+        r'только что',
+        r'вчера',
+        r'сегодня'
+    ]
+    
+    for pattern in relative_patterns:
+        if re.search(pattern, date_str.lower()):
+            return ""
+
     try:
         from datetime import datetime
         formats_to_try = [
@@ -39,7 +57,7 @@ def format_date(date_str):
                 continue
     except Exception:
         pass
-    return date_str
+    return ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -605,14 +623,14 @@ async def fresh_news(message: types.Message):
                 response += f"   📰 {article['source']}\n"
                 if article.get('date'):
                     formatted_date = format_date(article['date'])
-                    response += f"   📅 {formatted_date}\n"
+                    if formatted_date:
+                        response += f"   📅 {formatted_date}\n"
                 response += f"   🔗 {article['url']}\n\n"
 
                 if len(response) > 3500:
                     response += "... (показаны первые статьи)"
                     break
 
-            response += "💡 Все ссылки ведут на реальные новостные статьи"
         else:
             response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
             response += "💡 Попробуйте использовать поиск по конкретному запросу."
@@ -648,7 +666,7 @@ async def handle_text(message: types.Message):
             response_note = "🌍 Поиск только в международных источниках\n"
         else:
             search_type = "all"
-            response_note = "🔍 Поиск по всем источникам\n"
+            response_note = "🔍 Поиск по русским источникам\n"
 
         articles = await news_searcher.universal_search(user_text, search_type)
 
@@ -656,7 +674,7 @@ async def handle_text(message: types.Message):
             russian_articles = [a for a in articles if a.get('language') == 'ru']
             english_articles = [a for a in articles if a.get('language') == 'en']
 
-            response = f"🔍 Результаты поиска по '{user_text}':\n\n{response_note}\n"
+            response = f"🔍 Результаты поиска по '{user_text}':\n\n"
 
             if russian_articles and search_type != "international":
                 response += "🇷🇺 Российские источники:\n\n"
@@ -665,21 +683,22 @@ async def handle_text(message: types.Message):
                     response += f"   📰 {article['source']}\n"
                     if article.get('date'):
                         formatted_date = format_date(article['date'])
-                        response += f"   📅 {formatted_date}\n"
+                        if formatted_date:
+                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
 
-            if english_articles:
+            if english_articles and search_type == "international":
                 response += "🌍 Международные источники:\n\n"
                 for i, article in enumerate(english_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
                     if article.get('date'):
                         formatted_date = format_date(article['date'])
-                        response += f"   📅 {formatted_date}\n"
+                        if formatted_date:
+                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
 
-            response += f"📊 Найдено статей: {len(articles)}\n"
-            response += "✅ Все ссылки ведут на реальные новостные статьи"
+            response += f"📊 Найдено статей: {len(articles)}"
 
         else:
             response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
