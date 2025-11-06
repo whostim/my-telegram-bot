@@ -545,8 +545,11 @@ async def fresh_news(message: types.Message):
                 response += f"{i}. {article['title']}\n"
                 response += f"   📰 {article['source']}\n"
                 if article.get('date'):
-		  formatted_date = format_date(article['date'])
-		  response += f"   📅 {formatted_date}\n"	
+        response = f"🔍 Результаты поиска по "{user_text}":
+
+{response_note}
+"
+          response += f"   📅 {formatted_date}\n"    
                 response += f"   🔗 {article['url']}\n\n"
                 
                 if len(response) > 3500:
@@ -599,9 +602,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(russian_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
-		    if article.get('date'):
-       		         formatted_date = format_date(article['date'])
-       			 response += f"   📅 {formatted_date}\n"
+            if article.get('date'):
+                        formatted_date = format_date(article['date'])
+                    response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             if english_articles:
@@ -609,9 +612,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(english_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
-		    if article.get('date'):
-       			 formatted_date = format_date(article['date'])
-       			 response += f"   📅 {formatted_date}\n"
+            if article.get('date'):
+                    formatted_date = format_date(article['date'])
+                    response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             response += f"📊 Найдено статей: {len(articles)}\n"
