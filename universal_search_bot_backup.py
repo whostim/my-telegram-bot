@@ -541,16 +541,12 @@ async def fresh_news(message: types.Message):
         if articles:
             response = "⚡ Самые свежие новости:\n\n"
             
-                response += f"{i}. {article['title']}\n"
-    response += f"   📰 {article['source']}\n"
-    if article.get('date'):
-        response += f"   📅 {article['date']}\n"  # ЭТУ СТРОКУ МЕНЯЕМ
-    response += f"   🔗 {article['url']}\n\n"
-for i, article in enumerate(articles, 1):
+            for i, article in enumerate(articles, 1):
                 response += f"{i}. {article['title']}\n"
                 response += f"   📰 {article['source']}\n"
                 if article.get('date'):
-                    response += f"   📅 {article['date']}\n"
+          formatted_date = format_date(article['date'])
+          response += f"   📅 {formatted_date}\n"    
                 response += f"   🔗 {article['url']}\n\n"
                 
                 if len(response) > 3500:
@@ -603,6 +599,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(russian_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
+            if article.get('date'):
+                        formatted_date = format_date(article['date'])
+                    response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             if english_articles:
@@ -610,6 +609,9 @@ async def handle_text(message: types.Message):
                 for i, article in enumerate(english_articles[:4], 1):
                     response += f"{i}. {article['title']}\n"
                     response += f"   📰 {article['source']}\n"
+            if article.get('date'):
+                    formatted_date = format_date(article['date'])
+                    response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
             
             response += f"📊 Найдено статей: {len(articles)}\n"
