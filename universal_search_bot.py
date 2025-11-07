@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import logging
 import asyncio
@@ -12,9 +12,6 @@ from bs4 import BeautifulSoup
 import json
 import re
 import random
-from datetime import datetime, timedelta
-
-import os
 import sys
 import atexit
 import signal
@@ -24,11 +21,9 @@ def handle_exit(signum, frame):
     print(f"📢 Получен сигнал {signum}, завершаем работу...")
     sys.exit(0)
 
-# Регистрируем обработчики сигналов
 signal.signal(signal.SIGTERM, handle_exit)
 signal.signal(signal.SIGINT, handle_exit)
 
-# Проверка на множественный запуск
 lock_file = "/tmp/telegram-bot.lock"
 
 def cleanup_lock():
@@ -41,81 +36,28 @@ def cleanup_lock():
 
 def check_single_instance():
     try:
-        # Проверяем, существует ли файл блокировки
         if os.path.exists(lock_file):
             with open(lock_file, 'r') as f:
                 old_pid = f.read().strip()
-            
-            # Проверяем, жив ли процесс с этим PID
             try:
                 os.kill(int(old_pid), 0)
                 print(f"❌ Бот уже запущен в процессе {old_pid}. Завершаем.")
                 sys.exit(1)
             except (ProcessLookupError, ValueError):
-                # Процесс не существует, можно продолжить
                 print("🔄 Старый процесс не найден, продолжаем запуск")
                 os.remove(lock_file)
         
-        # Создаем новый файл блокировки
         with open(lock_file, 'w') as f:
             f.write(str(os.getpid()))
         
-        # Регистрируем очистку при выходе
         atexit.register(cleanup_lock)
         print(f"🔒 Файл блокировки создан (PID: {os.getpid()})")
         
     except Exception as e:
         print(f"⚠️ Ошибка при проверке блокировки: {e}")
-        # В случае ошибки все равно продолжаем, но без блокировки
 
-# Вызываем проверку
 check_single_instance()
 # ===== КОНЕЦ ЗАЩИТЫ =====
-
-def format_date(date_str):
-    if not date_str:
-        return ""
-    
-    # Убираем относительные форматы времени
-    relative_patterns = [
-        r'\d+\s*(мес|месяц|месяцев|месяца)',
-        r'\d+\s*(год|года|лет)',
-        r'\d+\s*(день|дня|дней)',
-        r'\d+\s*(недел|недели|недель)',
-        r'\d+\s*(час|часа|часов)',
-        r'\d+\s*(минут|минуты)',
-        r'только что',
-        r'вчера',
-        r'сегодня'
-    ]
-    
-    for pattern in relative_patterns:
-        if re.search(pattern, date_str.lower()):
-            return ""
-
-    try:
-        from datetime import datetime
-        formats_to_try = [
-            '%Y-%m-%d',
-            '%d.%m.%Y',
-            '%d/%m/%Y',
-            '%m/%d/%Y',
-            '%B %d, %Y',
-            '%b %d, %Y',
-            '%d %B %Y',
-            '%d %b %Y',
-            '%Y-%m-%dT%H:%M:%S',
-            '%Y-%m-%d %H:%M:%S'
-        ]
-        for fmt in formats_to_try:
-            try:
-                dt = datetime.strptime(date_str.strip(), fmt)
-                return dt.strftime('%d.%m.%Y')
-            except ValueError:
-                continue
-    except Exception:
-        pass
-    return ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -145,6 +87,9 @@ main_keyboard = ReplyKeyboardMarkup(
     ], 
     resize_keyboard=True
 )
+
+# Словарь для хранения типа поиска для каждого пользователя
+user_search_type = {}
 
 class ImprovedNewsSearcher:
     def __init__(self):
@@ -261,10 +206,6 @@ class ImprovedNewsSearcher:
                             elif link.startswith('/'):
                                 link = f"https://yandex.ru{link}"
 
-                            source_elem = card.find('span', class_='mg-card-source__source')
-                            time_elem = card.find('span', class_='mg-card-source__time')
-                            desc_elem = card.find('div', class_='mg-card__annotation')
-
                             if link and not any(
                                 domain in link for domain in [
                                     'google.com/search',
@@ -272,9 +213,6 @@ class ImprovedNewsSearcher:
                                 articles.append({
                                     'title': title,
                                     'url': link,
-                                    'source': source_elem.get_text().strip() if source_elem else 'Яндекс.Новости',
-                                    'date': time_elem.get_text().strip() if time_elem else '',
-                                    'description': desc_elem.get_text().strip() if desc_elem else '',
                                     'language': 'ru'
                                 })
                         except Exception as e:
@@ -337,9 +275,6 @@ class ImprovedNewsSearcher:
                                 if exclude_russian and self.is_russian_domain(url):
                                     continue
 
-                                source_elem = card.find(['div', 'span'], class_=re.compile('source|author'))
-                                time_elem = card.find(['div', 'span'], class_=re.compile('time|date'))
-
                                 if url and not any(
                                     search_domain in url for search_domain in [
                                         'google.com/search',
@@ -347,8 +282,6 @@ class ImprovedNewsSearcher:
                                     articles.append({
                                         'title': title,
                                         'url': url,
-                                        'source': source_elem.get_text().strip() if source_elem else 'Bing News',
-                                        'date': time_elem.get_text().strip() if time_elem else '',
                                         'language': 'en' if market == 'en-US' else 'ru'
                                     })
                         except Exception:
@@ -397,15 +330,10 @@ class ImprovedNewsSearcher:
                                     if self.is_russian_domain(url):
                                         continue
 
-                                    time_elem = card.find('time')
-                                    source_elem = card.find(['div', 'span'], class_=re.compile('source'))
-
                                     if url and url.startswith('http'):
                                         articles.append({
                                             'title': title,
                                             'url': url,
-                                            'source': source_elem.get_text().strip() if source_elem else 'Google News',
-                                            'date': time_elem.get('datetime', '') if time_elem else '',
                                             'language': 'en'
                                         })
                         except Exception:
@@ -459,14 +387,10 @@ class ImprovedNewsSearcher:
                                 if exclude_russian and self.is_russian_domain(url):
                                     continue
 
-                                snippet_elem = result.find('a', class_='result__snippet')
-
                                 if url and url.startswith('http'):
                                     articles.append({
                                         'title': title,
                                         'url': url,
-                                        'source': 'DuckDuckGo',
-                                        'description': snippet_elem.get_text().strip()[:150] + '...' if snippet_elem else '',
                                         'language': 'en'
                                     })
                         except Exception:
@@ -660,10 +584,14 @@ async def cmd_help(message: types.Message):
 
 @dp.message(lambda message: message.text == "🔍 Поиск новостей")
 async def search_epr_news(message: types.Message):
+    user_id = message.from_user.id
+    user_search_type[user_id] = 'all'
     await message.answer("🔍 Напишите запрос для поиска новостей:")
 
 @dp.message(lambda message: message.text == "🌍 Международные источники")
 async def international_sources(message: types.Message):
+    user_id = message.from_user.id
+    user_search_type[user_id] = 'international'
     await message.answer("🌍 Напишите запрос для поиска в международных источниках:")
 
 @dp.message(lambda message: message.text == "⚡ Свежие новости")
@@ -678,11 +606,6 @@ async def fresh_news(message: types.Message):
 
             for i, article in enumerate(articles, 1):
                 response += f"{i}. {article['title']}\n"
-                response += f"   📰 {article['source']}\n"
-                if article.get('date'):
-                    formatted_date = format_date(article['date'])
-                    if formatted_date:
-                        response += f"   📅 {formatted_date}\n"
                 response += f"   🔗 {article['url']}\n\n"
 
                 if len(response) > 3500:
@@ -701,11 +624,14 @@ async def fresh_news(message: types.Message):
 
 @dp.message(lambda message: message.text == "📊 Быстрый поиск")
 async def quick_search(message: types.Message):
+    user_id = message.from_user.id
+    user_search_type[user_id] = 'quick'
     await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам:")
 
 @dp.message()
 async def handle_text(message: types.Message):
     user_text = message.text.strip()
+    user_id = message.from_user.id
 
     buttons = [
         "🔍 Поиск новостей",
@@ -718,49 +644,65 @@ async def handle_text(message: types.Message):
     await message.answer(f"🔍 Ищу новости по запросу: '{user_text}'...")
 
     try:
-        if any(word in user_text.lower()
-           for word in ['russia', 'russian', 'international']):
-            search_type = "international"
-            response_note = "🌍 Поиск только в международных источниках\n"
-        else:
-            search_type = "all"
-            response_note = "🔍 Поиск по русским источникам\n"
-
-        articles = await news_searcher.universal_search(user_text, search_type)
-
-        if articles:
-            russian_articles = [a for a in articles if a.get('language') == 'ru']
-            english_articles = [a for a in articles if a.get('language') == 'en']
-
-            response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-
-            if russian_articles and search_type != "international":
-                response += "🇷🇺 Российские источники:\n\n"
-                for i, article in enumerate(russian_articles[:4], 1):
+        # Определяем тип поиска
+        search_type = user_search_type.pop(user_id, 'all')
+        
+        if search_type == 'quick':
+            # Быстрый поиск: 3 статьи из русских источников и 3 из международных
+            russian_articles = await news_searcher.universal_search(user_text, "russian")
+            translated_query = await news_searcher.translate_query(user_text)
+            international_articles = await news_searcher.universal_search(translated_query, "international")
+            
+            articles = russian_articles[:3] + international_articles[:3]
+            
+            if articles:
+                response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
+                for i, article in enumerate(articles, 1):
                     response += f"{i}. {article['title']}\n"
-                    response += f"   📰 {article['source']}\n"
-                    if article.get('date'):
-                        formatted_date = format_date(article['date'])
-                        if formatted_date:
-                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
-
-            if english_articles and search_type == "international":
+            else:
+                response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+                response += "💡 Попробуйте изменить формулировку запроса."
+                
+        elif search_type == 'international':
+            # Международные источники: переводим запрос и ищем только в иностранных источниках
+            translated_query = await news_searcher.translate_query(user_text)
+            articles = await news_searcher.universal_search(translated_query, "international")
+            
+            if articles:
+                response = f"🔍 Результаты поиска по '{user_text}':\n\n"
                 response += "🌍 Международные источники:\n\n"
-                for i, article in enumerate(english_articles[:4], 1):
+                for i, article in enumerate(articles[:6], 1):
                     response += f"{i}. {article['title']}\n"
-                    response += f"   📰 {article['source']}\n"
-                    if article.get('date'):
-                        formatted_date = format_date(article['date'])
-                        if formatted_date:
-                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
+            else:
+                response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
+                response += "💡 Попробуйте изменить формулировку запроса."
+                
+        else:  # search_type == 'all'
+            # Обычный поиск: русские и международные источники
+            articles = await news_searcher.universal_search(user_text, "all")
+            
+            if articles:
+                russian_articles = [a for a in articles if a.get('language') == 'ru']
+                english_articles = [a for a in articles if a.get('language') == 'en']
 
-            response += f"📊 Найдено статей: {len(articles)}"
+                response = f"🔍 Результаты поиска по '{user_text}':\n\n"
 
-        else:
-            response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
-            response += "💡 Попробуйте изменить формулировку запроса."
+                if russian_articles:
+                    response += "🇷🇺 Российские источники:\n\n"
+                    for i, article in enumerate(russian_articles[:3], 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
+
+                if english_articles:
+                    response += "🌍 Международные источники:\n\n"
+                    for i, article in enumerate(english_articles[:3], 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
+            else:
+                response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+                response += "💡 Попробуйте изменить формулировку запроса."
 
         await message.answer(response)
 

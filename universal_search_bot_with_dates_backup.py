@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import logging
 import asyncio
@@ -12,9 +12,6 @@ from bs4 import BeautifulSoup
 import json
 import re
 import random
-from datetime import datetime, timedelta
-
-import os
 import sys
 import atexit
 import signal
@@ -682,6 +679,7 @@ async def fresh_news(message: types.Message):
                 if article.get('date'):
                     formatted_date = format_date(article['date'])
                     if formatted_date:
+                        response += f"   📅 {formatted_date}\n"
                 response += f"   🔗 {article['url']}\n\n"
 
                 if len(response) > 3500:
@@ -741,6 +739,7 @@ async def handle_text(message: types.Message):
                     if article.get('date'):
                         formatted_date = format_date(article['date'])
                         if formatted_date:
+                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
 
             if english_articles and search_type == "international":
@@ -751,6 +750,7 @@ async def handle_text(message: types.Message):
                     if article.get('date'):
                         formatted_date = format_date(article['date'])
                         if formatted_date:
+                            response += f"   📅 {formatted_date}\n"
                     response += f"   🔗 {article['url']}\n\n"
 
             response += f"📊 Найдено статей: {len(articles)}"
