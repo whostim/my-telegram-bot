@@ -14,6 +14,64 @@ import re
 import random
 from datetime import datetime, timedelta
 
+import os
+import sys
+import atexit
+import signal
+
+# ===== ЗАЩИТА ОТ МНОЖЕСТВЕННОГО ЗАПУСКА =====
+def handle_exit(signum, frame):
+    print(f"📢 Получен сигнал {signum}, завершаем работу...")
+    sys.exit(0)
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
+
+# Проверка на множественный запуск
+lock_file = "/tmp/telegram-bot.lock"
+
+def cleanup_lock():
+    try:
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            print("🔓 Файл блокировки удален")
+    except Exception as e:
+        print(f"⚠️ Ошибка при удалении lock-файла: {e}")
+
+def check_single_instance():
+    try:
+        # Проверяем, существует ли файл блокировки
+        if os.path.exists(lock_file):
+            with open(lock_file, 'r') as f:
+                old_pid = f.read().strip()
+            
+            # Проверяем, жив ли процесс с этим PID
+            try:
+                os.kill(int(old_pid), 0)
+                print(f"❌ Бот уже запущен в процессе {old_pid}. Завершаем.")
+                sys.exit(1)
+            except (ProcessLookupError, ValueError):
+                # Процесс не существует, можно продолжить
+                print("🔄 Старый процесс не найден, продолжаем запуск")
+                os.remove(lock_file)
+        
+        # Создаем новый файл блокировки
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        # Регистрируем очистку при выходе
+        atexit.register(cleanup_lock)
+        print(f"🔒 Файл блокировки создан (PID: {os.getpid()})")
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка при проверке блокировки: {e}")
+        # В случае ошибки все равно продолжаем, но без блокировки
+
+# Вызываем проверку
+check_single_instance()
+# ===== КОНЕЦ ЗАЩИТЫ =====
+
 def format_date(date_str):
     if not date_str:
         return ""
