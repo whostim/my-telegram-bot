@@ -131,44 +131,126 @@ class ImprovedNewsSearcher:
         except BaseException:
             return False
 
-    async def translate_query(self, query):
-        translation_dict = {
-            'эпр': 'EPR',
-            'экспериментальный': 'experimental',
-            'правовой': 'legal',
-            'режим': 'regime',
-            'регуляторная': 'regulatory',
-            'песочница': 'sandbox',
-            'финансы': 'finance',
-            'финтех': 'fintech',
-            'банк': 'bank',
-            'россия': 'Russia',
-            'рф': 'Russian Federation',
-            'цифровой': 'digital',
-            'экономика': 'economy',
-            'инновации': 'innovations',
-            'технологии': 'technologies',
-            'закон': 'law',
-            'правительство': 'government',
-            'регулирование': 'regulation'
-        }
+    def is_russian_text(self, text):
+        """Проверяет, содержит ли текст кириллические символы"""
+        return bool(re.search('[а-яА-Я]', text))
 
-        words = query.lower().split()
-        translated_words = []
+    async def correct_spelling_auto(self, text):
+        """Автоматическая проверка и коррекция правописания через Yandex Speller API"""
+        try:
+            if not self.is_russian_text(text):
+                return text
+                
+            session = await self.get_session()
+            encoded_text = urllib.parse.quote(text)
+            
+            # Используем Yandex Speller API для проверки орфографии
+            url = f"https://speller.yandex.net/services/spellservice.json/checkText?text={encoded_text}&lang=ru,en"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    corrections = await response.json()
+                    
+                    if corrections:
+                        # Применяем исправления к тексту
+                        corrected_text = text
+                        for correction in reversed(corrections):
+                            if correction.get('s'):
+                                # Берем первое предложенное исправление
+                                fixed_word = correction['s'][0]
+                                wrong_word = correction['word']
+                                corrected_text = corrected_text.replace(wrong_word, fixed_word)
+                        
+                        logger.info(f"📝 Исправлено правописание: '{text}' -> '{corrected_text}'")
+                        return corrected_text
+                    
+            return text
+        except Exception as e:
+            logger.error(f"❌ Ошибка проверки правописания: {e}")
+            return text
 
-        for word in words:
-            clean_word = re.sub(r'[^\w\s]', '', word)
-            if clean_word in translation_dict:
-                translated_words.append(translation_dict[clean_word])
-            else:
-                translated_words.append(clean_word)
+    async def translate_to_english_auto(self, text):
+        """Автоматический перевод на английский через Yandex Translate API"""
+        try:
+            # Проверяем, есть ли русские символы
+            if not self.is_russian_text(text):
+                return text
+                
+            session = await self.get_session()
+            encoded_text = urllib.parse.quote(text)
+            
+            # Используем Yandex Translate API (бесплатный, с ограничениями)
+            # Этот API ключ демонстрационный, для работы нужно получить свой
+            url = f"https://translate.yandex.net/api/v1.5/tr.json/translate?key=trnsl.1.1.20230101T000000Z.1234567890.abcdef&lang=ru-en&text={encoded_text}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('code') == 200 and data.get('text'):
+                        translated = data['text'][0]
+                        logger.info(f"🌍 Автоперевод: '{text}' -> '{translated}'")
+                        return translated
+            
+            # Fallback: используем MyMemory Translation API если Yandex недоступен
+            return await self.translate_fallback(text)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка перевода: {e}")
+            return await self.translate_fallback(text)
 
-        translated_query = ' '.join(translated_words)
+    async def translate_fallback(self, text):
+        """Резервный переводчик через MyMemory API"""
+        try:
+            if not self.is_russian_text(text):
+                return text
+                
+            session = await self.get_session()
+            encoded_text = urllib.parse.quote(text)
+            
+            url = f"https://api.mymemory.translated.net/get?q={encoded_text}&langpair=ru|en"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('responseData', {}).get('translatedText'):
+                        translated = data['responseData']['translatedText']
+                        logger.info(f"🌍 Резервный перевод: '{text}' -> '{translated}'")
+                        return translated
+            
+            return text
+        except Exception as e:
+            logger.error(f"❌ Ошибка резервного перевода: {e}")
+            return text
 
-        if any(word in query.lower() for word in ['эпр', 'регуляторная', 'песочница']):
-            translated_query += " Russia"
-
-        return translated_query
+    async def prepare_international_query(self, query):
+        """Подготавливает запрос для международного поиска: проверка правописания + перевод"""
+        try:
+            logger.info(f"🔧 Подготовка запроса: '{query}'")
+            
+            # Шаг 1: Автоматическая проверка и коррекция правописания
+            corrected_query = await self.correct_spelling_auto(query)
+            
+            # Шаг 2: Автоматический перевод на английский
+            translated_query = await self.translate_to_english_auto(corrected_query)
+            
+            logger.info(f"✅ Подготовленный запрос: '{translated_query}'")
+            return translated_query
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка подготовки запроса: {e}")
+            return query
 
     async def search_yandex_news_direct(self, query):
         try:
@@ -272,7 +354,12 @@ class ImprovedNewsSearcher:
                                 if 'bing.com/news/search' in url:
                                     continue
 
+                                # Строгая фильтрация русских доменов
                                 if exclude_russian and self.is_russian_domain(url):
+                                    continue
+
+                                # Фильтрация по русскому тексту в заголовке
+                                if exclude_russian and self.is_russian_text(title):
                                     continue
 
                                 if url and not any(
@@ -293,7 +380,7 @@ class ImprovedNewsSearcher:
             logger.debug(f"Ошибка Bing News: {e}")
             return []
 
-    async def search_google_news_english(self, query):
+    async def search_google_news_english(self, query, exclude_russian=True):
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
@@ -327,7 +414,8 @@ class ImprovedNewsSearcher:
                                     if 'news.google.com' in url:
                                         continue
 
-                                    if self.is_russian_domain(url):
+                                    # Строгая фильтрация русских доменов и текста
+                                    if exclude_russian and (self.is_russian_domain(url) or self.is_russian_text(title)):
                                         continue
 
                                     if url and url.startswith('http'):
@@ -384,7 +472,8 @@ class ImprovedNewsSearcher:
                                         'yandex.ru/search']):
                                     continue
 
-                                if exclude_russian and self.is_russian_domain(url):
+                                # Строгая фильтрация русских доменов и текста
+                                if exclude_russian and (self.is_russian_domain(url) or self.is_russian_text(title)):
                                     continue
 
                                 if url and url.startswith('http'):
@@ -415,35 +504,37 @@ class ImprovedNewsSearcher:
             if search_type in ["all", "russian"]:
                 logger.info(f"🔍 Поиск в российских источниках: {query}")
 
-                yandex_results = await self.search_yandex_news_direct(f"{query} ЭПР")
+                yandex_results = await self.search_yandex_news_direct(query)
                 all_results.extend(yandex_results)
                 logger.info(f"✅ Яндекс.Новости: {len(yandex_results)} статей")
 
-                bing_ru_results = await self.search_bing_news_improved(f"{query} ЭПР", 'ru-RU')
+                bing_ru_results = await self.search_bing_news_improved(query, 'ru-RU')
                 all_results.extend(bing_ru_results)
                 logger.info(f"✅ Bing Россия: {len(bing_ru_results)} статей")
 
             if search_type in ["all", "international"]:
                 logger.info(f"🌍 Поиск в международных источниках: {query}")
 
-                translated_query = await self.translate_query(query)
-                logger.info(f"🌍 Переведенный запрос: {translated_query}")
+                # Для международного поиска используем подготовленный запрос
+                international_query = await self.prepare_international_query(query)
+                logger.info(f"🌍 Подготовленный запрос: {international_query}")
 
-                google_results = await self.search_google_news_english(translated_query)
+                google_results = await self.search_google_news_english(international_query, exclude_russian=True)
                 all_results.extend(google_results)
                 logger.info(f"✅ Google News: {len(google_results)} статей")
 
-                bing_en_results = await self.search_bing_news_improved(translated_query, 'en-US', exclude_russian=True)
+                bing_en_results = await self.search_bing_news_improved(international_query, 'en-US', exclude_russian=True)
                 all_results.extend(bing_en_results)
                 logger.info(f"✅ Bing International: {len(bing_en_results)} статей")
 
-                duckduckgo_results = await self.search_duckduckgo_improved(translated_query, exclude_russian=True)
+                duckduckgo_results = await self.search_duckduckgo_improved(international_query, exclude_russian=True)
                 all_results.extend(duckduckgo_results)
                 logger.info(f"✅ DuckDuckGo: {len(duckduckgo_results)} статей")
 
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
+        # Строгая фильтрация результатов
         filtered_results = []
         for result in all_results:
             if result and result.get('url'):
@@ -457,8 +548,11 @@ class ImprovedNewsSearcher:
                 ]):
                     continue
                 
-                if search_type == "international" and self.is_russian_domain(url):
-                    continue
+                # Строгая фильтрация для международного поиска
+                if search_type == "international":
+                    if (self.is_russian_domain(url) or 
+                        self.is_russian_text(result.get('title', ''))):
+                        continue
                     
                 if url.startswith('http') and len(url) > 20:
                     filtered_results.append(result)
@@ -471,7 +565,6 @@ class ImprovedNewsSearcher:
                 unique_results.append(result)
 
         self.set_cached_results(cache_key, unique_results[:10])
-
         logger.info(f"📊 Итоговые результаты: {len(unique_results)} статей")
         return unique_results[:10]
 
@@ -592,7 +685,7 @@ async def search_epr_news(message: types.Message):
 async def international_sources(message: types.Message):
     user_id = message.from_user.id
     user_search_type[user_id] = 'international'
-    await message.answer("🌍 Напишите запрос для поиска в международных источниках:")
+    await message.answer("🌍 Напишите запрос для поиска в международных источниках (автоматический перевод на английский):")
 
 @dp.message(lambda message: message.text == "⚡ Свежие новости")
 async def fresh_news(message: types.Message):
@@ -650,8 +743,10 @@ async def handle_text(message: types.Message):
         if search_type == 'quick':
             # Быстрый поиск: 3 статьи из русских источников и 3 из международных
             russian_articles = await news_searcher.universal_search(user_text, "russian")
-            translated_query = await news_searcher.translate_query(user_text)
-            international_articles = await news_searcher.universal_search(translated_query, "international")
+            
+            # Для международной части используем подготовленный запрос
+            international_query = await news_searcher.prepare_international_query(user_text)
+            international_articles = await news_searcher.universal_search(international_query, "international")
             
             articles = russian_articles[:3] + international_articles[:3]
             
@@ -665,9 +760,9 @@ async def handle_text(message: types.Message):
                 response += "💡 Попробуйте изменить формулировку запроса."
                 
         elif search_type == 'international':
-            # Международные источники: переводим запрос и ищем только в иностранных источниках
-            translated_query = await news_searcher.translate_query(user_text)
-            articles = await news_searcher.universal_search(translated_query, "international")
+            # Международные источники: используем подготовленный запрос
+            international_query = await news_searcher.prepare_international_query(user_text)
+            articles = await news_searcher.universal_search(international_query, "international")
             
             if articles:
                 response = f"🔍 Результаты поиска по '{user_text}':\n\n"
