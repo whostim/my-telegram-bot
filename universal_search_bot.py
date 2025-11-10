@@ -580,6 +580,67 @@ class ImprovedNewsSearcher:
             logger.debug(f"Ошибка DuckDuckGo: {e}")
             return []
 
+    async def search_only_russian(self, query):
+        """Поиск ТОЛЬКО в российских источниках"""
+        cache_key = f"russian_only_{hash(query)}"
+        cached_results = self.get_cached_results(cache_key)
+        if cached_results:
+            logger.info("✅ Используем кэшированные результаты (только российские)")
+            return cached_results
+
+        logger.info(f"🔍 Поиск ТОЛЬКО в российских источниках: {query}")
+
+        all_results = []
+
+        try:
+            # Только российские источники
+            yandex_results = await self.search_yandex_news_direct(query)
+            all_results.extend(yandex_results)
+            logger.info(f"✅ Яндекс.Новости: {len(yandex_results)} статей")
+
+            bing_ru_results = await self.search_bing_news_improved(query, 'ru-RU')
+            all_results.extend(bing_ru_results)
+            logger.info(f"✅ Bing Россия: {len(bing_ru_results)} статей")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
+
+        # Фильтрация только российских доменов
+        filtered_results = []
+        seen_titles = set()
+        
+        for result in all_results:
+            if result and result.get('url'):
+                url = result['url'].lower()
+                
+                # Фильтрация поисковых страниц
+                if any(search_domain in url for search_domain in [
+                    'google.com/search',
+                    'bing.com/search', 
+                    'yandex.ru/search',
+                    'news.google.com',
+                    'news.yandex.ru/yandsearch'
+                ]):
+                    continue
+                
+                # ВАЖНО: проверяем, что это российский домен
+                if not self.is_russian_domain(url):
+                    continue
+                    
+                if url.startswith('http') and len(url) > 20:
+                    normalized_title = self.normalize_title(result.get('title', ''))
+                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
+                        seen_titles.add(normalized_title)
+                        filtered_results.append(result)
+
+        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
+        
+        final_results = filtered_results[:6]  # Ограничиваем 6 статьями
+        
+        self.set_cached_results(cache_key, final_results)
+        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей")
+        return final_results
+
     async def universal_search(self, query, search_type="all"):
         cache_key = f"{search_type}_{query}"
         cached_results = self.get_cached_results(cache_key)
@@ -822,7 +883,7 @@ class RobustBot:
         @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
         async def search_epr_news(message: types.Message):
             user_id = message.from_user.id
-            user_search_type[user_id] = 'russian'  # ИЗМЕНЕНО: было 'all', стало 'russian'
+            user_search_type[user_id] = 'russian'
             await message.answer("🔍 Напишите запрос для поиска новостей в российских источниках:")
 
         @self.dp.message(lambda message: message.text == "🌍 Международные источники")
@@ -914,8 +975,8 @@ class RobustBot:
                     response += "💡 Попробуйте изменить формулировку запроса."
                     
             elif search_type == 'russian':
-                # ИЗМЕНЕНО: Только российские источники
-                articles = await self.news_searcher.universal_search(user_text, "russian")
+                # 🔥 ИСПРАВЛЕНИЕ: ТОЛЬКО российские источники
+                articles = await self.news_searcher.search_only_russian(user_text)
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
