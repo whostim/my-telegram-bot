@@ -155,6 +155,76 @@ class ImprovedNewsSearcher:
     def is_russian_text(self, text):
         return bool(re.search('[а-яА-Я]', text))
 
+    def normalize_title(self, title):
+        """Нормализация заголовка для сравнения"""
+        if not title:
+            return ""
+        
+        # Приводим к нижнему регистру
+        normalized = title.lower()
+        
+        # Удаляем лишние пробелы
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        
+        # Удаляем знаки препинания (кроме букв, цифр и пробелов)
+        normalized = re.sub(r'[^\w\s]', '', normalized)
+        
+        # Удаляем стоп-слова которые часто повторяются в новостях
+        stop_words = ['новости', 'сегодня', 'сейчас', 'последние', 'свежие']
+        words = normalized.split()
+        filtered_words = [word for word in words if word not in stop_words]
+        
+        return ' '.join(filtered_words)
+
+    def is_duplicate_article(self, article, existing_articles, similarity_threshold=0.8):
+        """Проверяет, является ли статья дубликатом существующих"""
+        if not article or not existing_articles:
+            return False
+        
+        new_title_normalized = self.normalize_title(article.get('title', ''))
+        new_url = article.get('url', '')
+        
+        for existing in existing_articles:
+            existing_title_normalized = self.normalize_title(existing.get('title', ''))
+            existing_url = existing.get('url', '')
+            
+            # Проверяем совпадение по домену и ключевым словам
+            if self.is_same_domain(new_url, existing_url):
+                # Если URL с одного домена, проверяем схожесть заголовков
+                if self.calculate_similarity(new_title_normalized, existing_title_normalized) > similarity_threshold:
+                    return True
+            
+            # Проверяем очень похожие заголовки даже с разных доменов
+            if self.calculate_similarity(new_title_normalized, existing_title_normalized) > 0.9:
+                return True
+        
+        return False
+
+    def is_same_domain(self, url1, url2):
+        """Проверяет, принадлежат ли URL одному домену"""
+        try:
+            domain1 = urllib.parse.urlparse(url1).netloc
+            domain2 = urllib.parse.urlparse(url2).netloc
+            return domain1 == domain2
+        except:
+            return False
+
+    def calculate_similarity(self, text1, text2):
+        """Вычисляет схожесть двух текстов"""
+        if not text1 or not text2:
+            return 0
+        
+        words1 = set(text1.split())
+        words2 = set(text2.split())
+        
+        if not words1 or not words2:
+            return 0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0
+
     async def correct_spelling_auto(self, text):
         """Автоматическая проверка правописания через Yandex Speller API"""
         try:
@@ -538,13 +608,18 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
+        # Улучшенная фильтрация дубликатов
         filtered_results = []
+        seen_titles = set()
+        
         for result in all_results:
             if result and result.get('url'):
                 url = result['url'].lower()
+                
+                # Фильтрация поисковых страниц
                 if any(search_domain in url for search_domain in [
                     'google.com/search',
-                    'bing.com/search',
+                    'bing.com/search', 
                     'yandex.ru/search',
                     'news.google.com',
                     'news.yandex.ru/yandsearch'
@@ -555,20 +630,20 @@ class ImprovedNewsSearcher:
                     if (self.is_russian_domain(url) or 
                         self.is_russian_text(result.get('title', ''))):
                         continue
-                    
+                        
                 if url.startswith('http') and len(url) > 20:
-                    filtered_results.append(result)
+                    # Проверка на дубликаты по нормализованному заголовку
+                    normalized_title = self.normalize_title(result.get('title', ''))
+                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
+                        seen_titles.add(normalized_title)
+                        filtered_results.append(result)
 
-        seen_urls = set()
-        unique_results = []
-        for result in filtered_results:
-            if result['url'] not in seen_urls:
-                seen_urls.add(result['url'])
-                unique_results.append(result)
-
-        self.set_cached_results(cache_key, unique_results[:10])
-        logger.info(f"📊 Итоговые результаты: {len(unique_results)} статей")
-        return unique_results[:10]
+        # Сортируем по релевантности
+        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
+        
+        self.set_cached_results(cache_key, filtered_results[:10])
+        logger.info(f"📊 Итоговые уникальные результаты: {len(filtered_results)} статей")
+        return filtered_results[:10]
 
     async def get_fresh_news_today(self):
         cache_key = "fresh_news_today"
@@ -580,9 +655,11 @@ class ImprovedNewsSearcher:
 
         today_queries = [
             "ЭПР сегодня",
-            "ЭПР новости сегодня",
+            "ЭПР новости сегодня", 
             "регуляторная песочница сегодня",
-            "экспериментальный правовой режим новости"
+            "экспериментальный правовой режим новости",
+            "цифровые финансовые активы",
+            "регуляторные песочницы Россия"
         ]
 
         all_articles = []
@@ -594,8 +671,10 @@ class ImprovedNewsSearcher:
                 yandex_results = await self.search_yandex_news_direct(query)
                 bing_results = await self.search_bing_news_improved(query, 'ru-RU')
 
-                all_articles.extend(yandex_results)
-                all_articles.extend(bing_results)
+                # Фильтруем дубликаты на этапе сбора
+                for article in yandex_results + bing_results:
+                    if not self.is_duplicate_article(article, all_articles):
+                        all_articles.append(article)
 
                 await asyncio.sleep(1)
 
@@ -603,40 +682,74 @@ class ImprovedNewsSearcher:
                 logger.error(f"❌ Ошибка при поиске свежих новостей: {e}")
                 continue
 
+        # Улучшенная фильтрация дубликатов
         filtered_articles = []
+        seen_titles = set()
+        
         for article in all_articles:
             if article and article.get('url'):
                 url = article['url'].lower()
-                if not any(search_domain in url for search_domain in [
+                
+                # Пропускаем поисковые страницы и некорректные URL
+                if any(search_domain in url for search_domain in [
                     'google.com/search', 'bing.com/search', 'yandex.ru/search'
-                ]) and url.startswith('http') and len(url) > 20:
+                ]) or len(url) < 20:
+                    continue
+                
+                # Нормализуем заголовок для сравнения
+                normalized_title = self.normalize_title(article.get('title', ''))
+                
+                # Пропускаем статьи с очень короткими заголовками
+                if len(normalized_title) < 20:
+                    continue
+                    
+                # Проверяем уникальность по нормализованному заголовку
+                if normalized_title not in seen_titles:
+                    seen_titles.add(normalized_title)
                     filtered_articles.append(article)
 
-        seen_urls = set()
-        unique_articles = []
-        for article in filtered_articles:
-            if article['url'] not in seen_urls:
-                seen_urls.add(article['url'])
-                unique_articles.append(article)
-
-        if len(unique_articles) < 4:
+        # Если мало уникальных новостей, делаем дополнительный поиск
+        if len(filtered_articles) < 4:
             logger.info("🔍 Дополнительный поиск свежих новостей...")
-            backup_queries = ["ЭПР", "регуляторная песочница Россия"]
+            backup_queries = [
+                "ЭПР", 
+                "регуляторная песочница Россия",
+                "экспериментальный правовой режим",
+                "цифровая валюта ЦБ"
+            ]
+            
             for query in backup_queries:
                 try:
                     backup_results = await self.universal_search(query, "all")
                     for article in backup_results:
-                        if article['url'] not in seen_urls:
-                            seen_urls.add(article['url'])
-                            unique_articles.append(article)
+                        normalized_title = self.normalize_title(article.get('title', ''))
+                        if (normalized_title not in seen_titles and 
+                            len(normalized_title) >= 20 and
+                            not self.is_duplicate_article(article, filtered_articles)):
+                            seen_titles.add(normalized_title)
+                            filtered_articles.append(article)
                     await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"❌ Ошибка дополнительного поиска: {e}")
 
-        final_articles = unique_articles[:8]
+        # Сортируем по релевантности (приоритет ЭПР и регуляторных тем)
+        def relevance_score(article):
+            title = article.get('title', '').lower()
+            score = 0
+            keywords = ['эпр', 'экспериментальный правовой режим', 'регуляторная песочница', 
+                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн']
+            
+            for keyword in keywords:
+                if keyword in title:
+                    score += 1
+            return score
+
+        filtered_articles.sort(key=relevance_score, reverse=True)
+        final_articles = filtered_articles[:8]  # Берем топ-8 самых релевантных
+
         self.set_cached_results(cache_key, final_articles)
 
-        logger.info(f"✅ Найдено свежих новостей: {len(final_articles)}")
+        logger.info(f"✅ Найдено уникальных свежих новостей: {len(final_articles)}")
         return final_articles
 
     async def close(self):
