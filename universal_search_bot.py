@@ -627,7 +627,7 @@ class ImprovedNewsSearcher:
                 if not self.is_russian_domain(url):
                     continue
                     
-                if url.startswith('http') and len(url) > 20:
+                if url startswith('http') and len(url) > 20:
                     normalized_title = self.normalize_title(result.get('title', ''))
                     if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
                         seen_titles.add(normalized_title)
@@ -948,13 +948,22 @@ class RobustBot:
                 russian_articles = await self.news_searcher.universal_search(user_text, "russian")
                 international_query = await self.news_searcher.prepare_international_query(user_text)
                 international_articles = await self.news_searcher.universal_search(international_query, "international")
-                articles = russian_articles[:3] + international_articles[:3]
                 
-                if articles:
+                if russian_articles or international_articles:
                     response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
-                    for i, article in enumerate(articles, 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
+                    
+                    if russian_articles:
+                        response += "🇷🇺 Российские источники:\n\n"
+                        for i, article in enumerate(russian_articles[:3], 1):
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 {article['url']}\n\n"
+                    
+                    if international_articles:
+                        response += "🌍 Международные источники:\n\n"
+                        start_index = len(russian_articles[:3]) + 1
+                        for i, article in enumerate(international_articles[:3], start_index):
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 {article['url']}\n\n"
                 else:
                     response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
                     response += "💡 Попробуйте изменить формулировку запроса."
@@ -966,7 +975,6 @@ class RobustBot:
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    response += "🌍 Международные источники:\n\n"
                     for i, article in enumerate(articles[:6], 1):
                         response += f"{i}. {article['title']}\n"
                         response += f"   🔗 {article['url']}\n\n"
@@ -975,12 +983,11 @@ class RobustBot:
                     response += "💡 Попробуйте изменить формулировку запроса."
                     
             elif search_type == 'russian':
-                # 🔥 ИСПРАВЛЕНИЕ: ТОЛЬКО российские источники
+                # ТОЛЬКО российские источники
                 articles = await self.news_searcher.search_only_russian(user_text)
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    response += "🇷🇺 Российские источники:\n\n"
                     for i, article in enumerate(articles[:6], 1):
                         response += f"{i}. {article['title']}\n"
                         response += f"   🔗 {article['url']}\n\n"
