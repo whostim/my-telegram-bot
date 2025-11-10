@@ -15,6 +15,7 @@ import random
 import sys
 import atexit
 import signal
+from aiohttp import web
 
 # ===== КОНФИГУРАЦИЯ ЛОГГИРОВАНИЯ =====
 logging.basicConfig(
@@ -28,22 +29,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== УЛУЧШЕННАЯ ЗАЩИТА ОТ МНОЖЕСТВЕННОГО ЗАПУСКА =====
-def handle_exit(signum, frame):
-    logger.info(f"📢 Получен сигнал {signum}, graceful shutdown...")
-    sys.exit(0)
-
-def handle_usr1(signum, frame):
-    logger.info("🔄 Получен сигнал перезагрузки...")
-    # Не завершаем процесс, позволяем Render перезапустить контейнер
-
-signal.signal(signal.SIGTERM, handle_exit)
-signal.signal(signal.SIGINT, handle_exit)
-signal.signal(signal.SIGUSR1, handle_usr1)
-
-lock_file = "/tmp/telegram-bot.lock"
+class GracefulShutdown:
+    def __init__(self):
+        self.shutdown = False
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self):
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+    
+    def _handle_signal(self, signum, frame):
+        logger.info(f"📢 Получен сигнал {signum}, начинаю graceful shutdown...")
+        self.shutdown = True
 
 def cleanup_lock():
     try:
+        lock_file = "/tmp/telegram-bot.lock"
         if os.path.exists(lock_file):
             os.remove(lock_file)
             logger.info("🔓 Файл блокировки удален")
@@ -52,6 +53,7 @@ def cleanup_lock():
 
 def check_single_instance():
     try:
+        lock_file = "/tmp/telegram-bot.lock"
         if os.path.exists(lock_file):
             with open(lock_file, 'r') as f:
                 old_pid = f.read().strip()
@@ -74,6 +76,31 @@ def check_single_instance():
 
 check_single_instance()
 
+# ===== HEALTH CHECK SERVER =====
+class HealthServer:
+    def __init__(self, port=8080):
+        self.port = port
+        self.app = web.Application()
+        self.app.router.add_get('/health', self.health_check)
+        self.runner = None
+        self.site = None
+    
+    async def health_check(self, request):
+        return web.Response(text='OK', status=200)
+    
+    async def start(self):
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, '0.0.0.0', self.port)
+        await self.site.start()
+        logger.info(f"🌐 Health server started on port {self.port}")
+    
+    async def stop(self):
+        if self.site:
+            await self.site.stop()
+        if self.runner:
+            await self.runner.cleanup()
+
 # ===== ЗАГРУЗКА КОНФИГУРАЦИИ =====
 load_dotenv()
 
@@ -81,198 +108,6 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не найден в .env файле")
     sys.exit(1)
-
-# ===== КОНФИГУРАЦИЯ ПЕРЕЗАПУСКОВ =====
-MAX_RESTART_ATTEMPTS = 10
-RESTART_DELAY = 5
-
-class RobustBot:
-    def __init__(self):
-        self.bot = Bot(token=BOT_TOKEN)
-        self.dp = Dispatcher()
-        self.news_searcher = ImprovedNewsSearcher()
-        self.restart_count = 0
-        self.setup_handlers()
-        
-    def setup_handlers(self):
-        @self.dp.message(Command("start"))
-        async def cmd_start(message: types.Message):
-            await message.answer(
-                "🌐 Универсальный поиск новостей об ЭПР\n\n"
-                "🔍 Поиск новостей – российские и международные источники\n"
-                "🌍 Международные источники – только зарубежные СМИ\n"
-                "⚡ Свежие новости – актуальные статьи\n"
-                "📊 Быстрый поиск – мгновенные результаты\n\n"
-                "Просто напишите что ищете!",
-                reply_markup=main_keyboard
-            )
-
-        @self.dp.message(Command("help"))
-        async def cmd_help(message: types.Message):
-            help_text = """
-📖 Универсальный поиск новостей об ЭПР
-
-🔍 Поиск новостей – российские и международные источники
-🌍 Международные источники – только зарубежные СМИ
-⚡ Свежие новости – поиск актуальных статей за сегодня
-📊 Быстрый поиск – мгновенные результаты по всем источникам
-
-💡 Примеры запросов:
-    • ЭПР в финансах
-• регуляторная песочница
-• новые правила ЭПР
-• Russia fintech regulation
-
-⚡ Кнопка 'Свежие новости' ищет самые актуальные статьи за сегодня!
-"""
-            await message.answer(help_text)
-
-        @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
-        async def search_epr_news(message: types.Message):
-            user_id = message.from_user.id
-            user_search_type[user_id] = 'all'
-            await message.answer("🔍 Напишите запрос для поиска новостей:")
-
-        @self.dp.message(lambda message: message.text == "🌍 Международные источники")
-        async def international_sources(message: types.Message):
-            user_id = message.from_user.id
-            user_search_type[user_id] = 'international'
-            await message.answer("🌍 Напишите запрос для поиска в международных источниках (автоматический перевод на английский):")
-
-        @self.dp.message(lambda message: message.text == "⚡ Свежие новости")
-        async def fresh_news(message: types.Message):
-            await message.answer("⚡ Ищу самые свежие новости")
-            try:
-                articles = await self.news_searcher.get_fresh_news_today()
-                if articles:
-                    response = "⚡ Самые свежие новости:\n\n"
-                    for i, article in enumerate(articles, 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
-                        if len(response) > 3500:
-                            response += "... (показаны первые статьи)"
-                            break
-                else:
-                    response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
-                    response += "💡 Попробуйте использовать поиск по конкретному запросу."
-                await message.answer(response)
-            except Exception as e:
-                logger.error(f"❌ Ошибка поиска свежих новостей: {e}")
-                await message.answer("❌ Ошибка при поиске свежих новостей. Попробуйте позже.")
-
-        @self.dp.message(lambda message: message.text == "📊 Быстрый поиск")
-        async def quick_search(message: types.Message):
-            user_id = message.from_user.id
-            user_search_type[user_id] = 'quick'
-            await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам:")
-
-        @self.dp.message()
-        async def handle_text(message: types.Message):
-            user_text = message.text.strip()
-            user_id = message.from_user.id
-
-            buttons = [
-                "🔍 Поиск новостей",
-                "🌍 Международные источники", 
-                "⚡ Свежие новости",
-                "📊 Быстрый поиск"]
-            if user_text.startswith('/') or user_text in buttons:
-                return
-
-            await message.answer(f"🔍 Ищу новости по запросу: '{user_text}'...")
-            await self.process_search(message, user_text, user_id)
-
-    async def process_search(self, message, user_text, user_id):
-        try:
-            search_type = user_search_type.pop(user_id, 'all')
-            
-            if search_type == 'quick':
-                russian_articles = await self.news_searcher.universal_search(user_text, "russian")
-                international_query = await self.news_searcher.prepare_international_query(user_text)
-                international_articles = await self.news_searcher.universal_search(international_query, "international")
-                articles = russian_articles[:3] + international_articles[:3]
-                
-                if articles:
-                    response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
-                    for i, article in enumerate(articles, 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
-                else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
-                    
-            elif search_type == 'international':
-                international_query = await self.news_searcher.prepare_international_query(user_text)
-                articles = await self.news_searcher.universal_search(international_query, "international")
-                
-                if articles:
-                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    response += "🌍 Международные источники:\n\n"
-                    for i, article in enumerate(articles[:6], 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
-                else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
-                    
-            else:
-                articles = await self.news_searcher.universal_search(user_text, "all")
-                
-                if articles:
-                    russian_articles = [a for a in articles if a.get('language') == 'ru']
-                    english_articles = [a for a in articles if a.get('language') == 'en']
-
-                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-
-                    if russian_articles:
-                        response += "🇷🇺 Российские источники:\n\n"
-                        for i, article in enumerate(russian_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
-
-                    if english_articles:
-                        response += "🌍 Международные источники:\n\n"
-                        for i, article in enumerate(english_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
-                else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
-
-            await message.answer(response)
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка поиска: {e}")
-            await message.answer(f"❌ Ошибка при поиске. Попробуйте другой запрос.")
-
-    async def start(self):
-        """Запуск бота с обработкой ошибок"""
-        try:
-            logger.info("🚀 Запуск улучшенного поискового бота...")
-            await self.bot.delete_webhook(drop_pending_updates=True)
-            
-            # Конфигурация polling с повторными попытками
-            await self.dp.start_polling(
-                self.bot, 
-                skip_updates=True,
-                timeout=60,
-                relax=1,
-                allowed_updates=['message', 'callback_query']
-            )
-            
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
-            raise
-
-    async def stop(self):
-        """Корректная остановка бота"""
-        try:
-            await self.dp.stop_polling()
-            await self.news_searcher.close()
-            await self.bot.session.close()
-            logger.info("✅ Бот корректно остановлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при остановке бота: {e}")
 
 # ===== КЛАСС ПОИСКА НОВОСТЕЙ =====
 class ImprovedNewsSearcher:
@@ -825,32 +660,279 @@ main_keyboard = ReplyKeyboardMarkup(
 
 user_search_type = {}
 
+# ===== ROBUST BOT CLASS =====
+class RobustBot:
+    def __init__(self):
+        self.bot = Bot(token=BOT_TOKEN)
+        self.dp = Dispatcher()
+        self.news_searcher = ImprovedNewsSearcher()
+        self._is_running = False
+        self.setup_handlers()
+    
+    def setup_handlers(self):
+        @self.dp.message(Command("start"))
+        async def cmd_start(message: types.Message):
+            await message.answer(
+                "Универсальный поиск новостей об ЭПР\n\n"
+                "🔍 Поиск новостей – российские и международные источники\n"
+                "🌍 Международные источники – только зарубежные СМИ\n"
+                "⚡ Свежие новости – актуальные статьи\n"
+                "📊 Быстрый поиск – мгновенные результаты\n\n"
+                "Просто выберите что ищете!",
+                reply_markup=main_keyboard
+            )
+
+        @self.dp.message(Command("help"))
+        async def cmd_help(message: types.Message):
+            help_text = """
+📖 Универсальный поиск новостей об ЭПР
+
+🔍 Поиск новостей – российские и международные источники
+🌍 Международные источники – только зарубежные СМИ
+⚡ Свежие новости – поиск актуальных статей за сегодня
+📊 Быстрый поиск – мгновенные результаты по всем источникам
+
+💡 Примеры запросов:
+    • ЭПР в финансах
+• регуляторная песочница
+• новые правила ЭПР
+• Russia fintech regulation
+
+⚡ Кнопка 'Свежие новости' ищет самые актуальные статьи за сегодня!
+"""
+            await message.answer(help_text)
+
+        @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
+        async def search_epr_news(message: types.Message):
+            user_id = message.from_user.id
+            user_search_type[user_id] = 'all'
+            await message.answer("🔍 Напишите запрос для поиска новостей:")
+
+        @self.dp.message(lambda message: message.text == "🌍 Международные источники")
+        async def international_sources(message: types.Message):
+            user_id = message.from_user.id
+            user_search_type[user_id] = 'international'
+            await message.answer("🌍 Напишите запрос для поиска в международных источниках (автоматический перевод на английский):")
+
+        @self.dp.message(lambda message: message.text == "⚡ Свежие новости")
+        async def fresh_news(message: types.Message):
+            await message.answer("⚡ Ищу самые свежие новости")
+            try:
+                articles = await self.news_searcher.get_fresh_news_today()
+                if articles:
+                    response = "⚡ Самые свежие новости:\n\n"
+                    for i, article in enumerate(articles, 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
+                        if len(response) > 3500:
+                            response += "... (показаны первые статьи)"
+                            break
+                else:
+                    response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
+                    response += "💡 Попробуйте использовать поиск по конкретному запросу."
+                await message.answer(response)
+            except Exception as e:
+                logger.error(f"❌ Ошибка поиска свежих новостей: {e}")
+                await message.answer("❌ Ошибка при поиске свежих новостей. Попробуйте позже.")
+
+        @self.dp.message(lambda message: message.text == "📊 Быстрый поиск")
+        async def quick_search(message: types.Message):
+            user_id = message.from_user.id
+            user_search_type[user_id] = 'quick'
+            await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам:")
+
+        @self.dp.message()
+        async def handle_text(message: types.Message):
+            user_text = message.text.strip()
+            user_id = message.from_user.id
+
+            buttons = [
+                "🔍 Поиск новостей",
+                "🌍 Международные источники", 
+                "⚡ Свежие новости",
+                "📊 Быстрый поиск"]
+            if user_text.startswith('/') or user_text in buttons:
+                return
+
+            await message.answer(f"🔍 Ищу новости по запросу: '{user_text}'...")
+            await self.process_search(message, user_text, user_id)
+
+    async def process_search(self, message, user_text, user_id):
+        try:
+            search_type = user_search_type.pop(user_id, 'all')
+            
+            if search_type == 'quick':
+                russian_articles = await self.news_searcher.universal_search(user_text, "russian")
+                international_query = await self.news_searcher.prepare_international_query(user_text)
+                international_articles = await self.news_searcher.universal_search(international_query, "international")
+                articles = russian_articles[:3] + international_articles[:3]
+                
+                if articles:
+                    response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
+                    for i, article in enumerate(articles, 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
+                else:
+                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+                    response += "💡 Попробуйте изменить формулировку запроса."
+                    
+            elif search_type == 'international':
+                international_query = await self.news_searcher.prepare_international_query(user_text)
+                articles = await self.news_searcher.universal_search(international_query, "international")
+                
+                if articles:
+                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
+                    response += "🌍 Международные источники:\n\n"
+                    for i, article in enumerate(articles[:6], 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
+                else:
+                    response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
+                    response += "💡 Попробуйте изменить формулировку запроса."
+                    
+            else:
+                articles = await self.news_searcher.universal_search(user_text, "all")
+                
+                if articles:
+                    russian_articles = [a for a in articles if a.get('language') == 'ru']
+                    english_articles = [a for a in articles if a.get('language') == 'en']
+
+                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
+
+                    if russian_articles:
+                        response += "🇷🇺 Российские источники:\n\n"
+                        for i, article in enumerate(russian_articles[:3], 1):
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 {article['url']}\n\n"
+
+                    if english_articles:
+                        response += "🌍 Международные источники:\n\n"
+                        for i, article in enumerate(english_articles[:3], 1):
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 {article['url']}\n\n"
+                else:
+                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+                    response += "💡 Попробуйте изменить формулировку запроса."
+
+            await message.answer(response)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка поиска: {e}")
+            await message.answer(f"❌ Ошибка при поиске. Попробуйте другой запрос.")
+
+    async def start(self):
+        """Запуск бота с улучшенной обработкой ошибок"""
+        try:
+            logger.info("🚀 Запуск улучшенного поискового бота...")
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            
+            self._is_running = True
+            
+            # Polling с улучшенной обработкой ошибок
+            while self._is_running:
+                try:
+                    await self.dp.start_polling(
+                        self.bot, 
+                        skip_updates=True,
+                        timeout=60,
+                        relax=1,
+                        allowed_updates=['message', 'callback_query']
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Ошибка в polling: {e}")
+                    if self._is_running:  # Перезапускаем только если не запрошен shutdown
+                        logger.info("🔄 Перезапуск polling через 5 секунд...")
+                        await asyncio.sleep(5)
+                    else:
+                        break
+                        
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
+            raise
+    
+    async def stop(self):
+        """Корректная остановка бота"""
+        self._is_running = False
+        try:
+            await self.dp.stop_polling()
+            await self.news_searcher.close()
+            await self.bot.session.close()
+            logger.info("✅ Бот корректно остановлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при остановке бота: {e}")
+
 # ===== ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА =====
 async def main():
-    """Основная функция запуска бота"""
+    """Основная функция запуска бота с улучшенной обработкой ошибок"""
     bot_instance = None
+    shutdown_manager = GracefulShutdown()
+    
     try:
         bot_instance = RobustBot()
-        await bot_instance.start()
         
+        # Запускаем бота в отдельной task для возможности graceful shutdown
+        bot_task = asyncio.create_task(bot_instance.start())
+        
+        # Основной цикл проверки состояния
+        while not shutdown_manager.shutdown:
+            await asyncio.sleep(5)  # Проверяем каждые 5 секунд
+            
+            # Проверяем, жив ли бот
+            if bot_task.done():
+                if bot_task.exception():
+                    logger.error(f"❌ Бот упал с ошибкой: {bot_task.exception()}")
+                    # Пересоздаем задачу
+                    bot_task = asyncio.create_task(bot_instance.start())
+                else:
+                    logger.warning("⚠️ Бот завершился без ошибки, перезапускаем...")
+                    bot_task = asyncio.create_task(bot_instance.start())
+        
+        # Graceful shutdown
+        logger.info("🔄 Начинаем graceful shutdown...")
+        if bot_task and not bot_task.done():
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
+        
+        if bot_instance:
+            await bot_instance.stop()
+            
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в main(): {e}")
         if bot_instance:
             await bot_instance.stop()
         raise
 
+async def main_with_health():
+    """Основная функция с health check сервером"""
+    health_server = HealthServer()
+    await health_server.start()
+    
+    try:
+        await main()
+    finally:
+        await health_server.stop()
+
 # ===== ЗАПУСК ПРИЛОЖЕНИЯ =====
 if __name__ == "__main__":
     import time
     
     restart_count = 0
-    max_restarts = 10
+    max_restarts = 15  # Увеличил лимит перезапусков
     restart_delay = 5
+    last_restart_time = time.time()
     
     while restart_count < max_restarts:
         try:
+            current_time = time.time()
+            # Сбрасываем счетчик, если прошло больше часа с последнего перезапуска
+            if current_time - last_restart_time > 3600:
+                restart_count = 0
+            
             logger.info(f"🔄 Запуск бота (попытка {restart_count + 1}/{max_restarts})...")
-            asyncio.run(main())
+            asyncio.run(main_with_health())  # Используем версию с health server
             
         except KeyboardInterrupt:
             logger.info("⏹️ Остановка по запросу пользователя")
@@ -863,16 +945,18 @@ if __name__ == "__main__":
             else:
                 logger.error(f"🚨 Аварийное завершение с кодом {e.code}")
                 restart_count += 1
+                last_restart_time = time.time()
                 
         except Exception as e:
             logger.error(f"💥 Необработанное исключение: {e}")
             restart_count += 1
+            last_restart_time = time.time()
             
         if restart_count < max_restarts:
             logger.info(f"⏳ Перезапуск через {restart_delay} секунд...")
             time.sleep(restart_delay)
-            # Увеличиваем задержку с каждой попыткой
-            restart_delay = min(restart_delay * 1.5, 60)  # Макс 60 секунд
+            # Увеличиваем задержку с каждой попыткой, но не более 120 секунд
+            restart_delay = min(restart_delay * 1.5, 120)
     
     if restart_count >= max_restarts:
         logger.error("🚨 Достигнут лимит перезапусков. Бот остановлен.")
