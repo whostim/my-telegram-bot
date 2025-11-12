@@ -627,7 +627,7 @@ class ImprovedNewsSearcher:
                 if not self.is_russian_domain(url):
                     continue
                     
-                if url startswith('http') and len(url) > 20:
+                if url.startswith('http') and len(url) > 20:
                     normalized_title = self.normalize_title(result.get('title', ''))
                     if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
                         seen_titles.add(normalized_title)
