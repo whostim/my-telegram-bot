@@ -334,7 +334,8 @@ class ImprovedNewsSearcher:
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    news_cards = soup.find_all('article', class_='mg-card')[:10]
+                    # Увеличиваем количество проверяемых карточек
+                    news_cards = soup.find_all('article', class_='mg-card')[:15]
 
                     for card in news_cards:
                         try:
@@ -352,10 +353,8 @@ class ImprovedNewsSearcher:
                             elif link.startswith('/'):
                                 link = f"https://yandex.ru{link}"
 
-                            if link and not any(
-                                domain in link for domain in [
-                                    'google.com/search',
-                                    'yandex.ru/search']):
+                            # Убираем фильтрацию поисковых страниц - принимаем все ссылки
+                            if link and link.startswith('http'):
                                 articles.append({
                                     'title': title,
                                     'url': link,
@@ -398,11 +397,12 @@ class ImprovedNewsSearcher:
 
                     articles = []
 
-                    news_cards = soup.find_all('div', class_='news-card')[:10]
+                    # Расширяем поиск карточек
+                    news_cards = soup.find_all('div', class_='news-card')[:15]
                     if not news_cards:
-                        news_cards = soup.find_all('div', class_='tile')[:10]
+                        news_cards = soup.find_all('div', class_='tile')[:15]
                     if not news_cards:
-                        news_cards = soup.find_all('article')[:10]
+                        news_cards = soup.find_all('article')[:15]
 
                     for card in news_cards:
                         try:
@@ -419,19 +419,8 @@ class ImprovedNewsSearcher:
                                 if url.startswith('/'):
                                     url = f"https://www.bing.com{url}"
 
-                                if 'bing.com/news/search' in url:
-                                    continue
-
-                                if exclude_russian and self.is_russian_domain(url):
-                                    continue
-
-                                if exclude_russian and self.is_russian_text(title):
-                                    continue
-
-                                if url and not any(
-                                    search_domain in url for search_domain in [
-                                        'google.com/search',
-                                        'bing.com/search']):
+                                # Убираем фильтрацию bing search страниц
+                                if url and url.startswith('http'):
                                     articles.append({
                                         'title': title,
                                         'url': url,
@@ -468,7 +457,7 @@ class ImprovedNewsSearcher:
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    news_cards = soup.find_all('article')[:10]
+                    news_cards = soup.find_all('article')[:15]
 
                     for card in news_cards:
                         try:
@@ -481,12 +470,6 @@ class ImprovedNewsSearcher:
                                     if url.startswith('./'):
                                         url = f"https://news.google.com{url[1:]}"
                                     
-                                    if 'news.google.com' in url:
-                                        continue
-
-                                    if exclude_russian and (self.is_russian_domain(url) or self.is_russian_text(title)):
-                                        continue
-
                                     if url and url.startswith('http'):
                                         articles.append({
                                             'title': title,
@@ -523,7 +506,7 @@ class ImprovedNewsSearcher:
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    results = soup.find_all('div', class_='result')[:10]
+                    results = soup.find_all('div', class_='result')[:15]
 
                     for result in results:
                         try:
@@ -536,16 +519,6 @@ class ImprovedNewsSearcher:
                                     match = re.search(r'uddg=([^&]+)', url)
                                     if match:
                                         url = urllib.parse.unquote(match.group(1))
-
-                                if any(
-                                    domain in url for domain in [
-                                        'google.com/search',
-                                        'bing.com/search',
-                                        'yandex.ru/search']):
-                                    continue
-
-                                if exclude_russian and (self.is_russian_domain(url) or self.is_russian_text(title)):
-                                    continue
 
                                 if url and url.startswith('http'):
                                     articles.append({
@@ -566,7 +539,7 @@ class ImprovedNewsSearcher:
             return []
 
     async def search_only_russian(self, query):
-        """Поиск ТОЛЬКО в российских источниках"""
+        """Улучшенный поиск ТОЛЬКО в российских источниках"""
         cache_key = f"russian_only_{hash(query)}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
@@ -590,40 +563,32 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
 
-        # Фильтрация только российских доменов
+        # Улучшенная фильтрация с приоритетом официальных источников
         filtered_results = []
-        seen_titles = set()
+        seen_urls = set()
         
+        # Сначала собираем все результаты
         for result in all_results:
             if result and result.get('url'):
                 url = result['url'].lower()
                 
-                # Фильтрация поисковых страниц
-                if any(search_domain in url for search_domain in [
-                    'google.com/search',
-                    'bing.com/search', 
-                    'yandex.ru/search',
-                    'news.google.com',
-                    'news.yandex.ru/yandsearch'
-                ]):
-                    continue
-                
-                # ВАЖНО: проверяем, что это российский домен
-                if not self.is_russian_domain(url):
-                    continue
-                    
-                if url.startswith('http') and len(url) > 20:
-                    normalized_title = self.normalize_title(result.get('title', ''))
-                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
-                        seen_titles.add(normalized_title)
-                        filtered_results.append(result)
+                # Убираем фильтрацию поисковых страниц - принимаем все
+                if url.startswith('http') and url not in seen_urls:
+                    seen_urls.add(url)
+                    filtered_results.append(result)
 
-        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
+        # Сортируем: сначала приоритетные, потом остальные
+        priority_articles = [r for r in filtered_results if r.get('priority') or self.is_priority_domain(r['url'])]
+        regular_articles = [r for r in filtered_results if not (r.get('priority') or self.is_priority_domain(r['url']))]
         
-        final_results = filtered_results[:6]
+        # Объединяем с приоритетом официальных источников
+        final_results = priority_articles + regular_articles
+        
+        # Возвращаем больше результатов
+        final_results = final_results[:10]
         
         self.set_cached_results(cache_key, final_results)
-        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей")
+        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
         return final_results
 
     async def universal_search(self, query, search_type="all"):
@@ -668,39 +633,24 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
-        # Улучшенная фильтрация дубликатов
+        # Упрощенная фильтрация - только по уникальности URL
         filtered_results = []
-        seen_titles = set()
+        seen_urls = set()
         
         for result in all_results:
-            if result and result.get('url'):
-                url = result['url'].lower()
-                
-                if any(search_domain in url for search_domain in [
-                    'google.com/search',
-                    'bing.com/search', 
-                    'yandex.ru/search',
-                    'news.google.com',
-                    'news.yandex.ru/yandsearch'
-                ]):
-                    continue
-                
-                if search_type == "international":
-                    if (self.is_russian_domain(url) or 
-                        self.is_russian_text(result.get('title', ''))):
-                        continue
-                        
-                if url.startswith('http') and len(url) > 20:
-                    normalized_title = self.normalize_title(result.get('title', ''))
-                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
-                        seen_titles.add(normalized_title)
-                        filtered_results.append(result)
+            if result and result.get('url') and result['url'] not in seen_urls:
+                seen_urls.add(result['url'])
+                filtered_results.append(result)
 
-        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
-        
-        self.set_cached_results(cache_key, filtered_results[:10])
+        # Сортируем по приоритету для российских источников
+        if search_type in ["all", "russian"]:
+            priority_articles = [r for r in filtered_results if r.get('priority') or (r.get('language') == 'ru' and self.is_priority_domain(r['url']))]
+            regular_articles = [r for r in filtered_results if r not in priority_articles]
+            filtered_results = priority_articles + regular_articles
+
+        self.set_cached_results(cache_key, filtered_results[:12])
         logger.info(f"📊 Итоговые уникальные результаты: {len(filtered_results)} статей")
-        return filtered_results[:10]
+        return filtered_results[:12]
 
     async def get_fresh_news_today(self):
         cache_key = "fresh_news_today"
@@ -716,7 +666,9 @@ class ImprovedNewsSearcher:
             "регуляторная песочница сегодня",
             "экспериментальный правовой режим новости",
             "цифровые финансовые активы",
-            "регуляторные песочницы Россия"
+            "регуляторные песочницы Россия",
+            "Банк России ЭПР",
+            "ЦБ РФ экспериментальный правовой режим"
         ]
 
         all_articles = []
@@ -738,26 +690,20 @@ class ImprovedNewsSearcher:
                 logger.error(f"❌ Ошибка при поиске свежих новостей: {e}")
                 continue
 
+        # Упрощенная фильтрация
         filtered_articles = []
-        seen_titles = set()
+        seen_urls = set()
         
         for article in all_articles:
-            if article and article.get('url'):
-                url = article['url'].lower()
-                
-                if any(search_domain in url for search_domain in [
-                    'google.com/search', 'bing.com/search', 'yandex.ru/search'
-                ]) or len(url) < 20:
-                    continue
-                
-                normalized_title = self.normalize_title(article.get('title', ''))
-                
-                if len(normalized_title) < 20:
-                    continue
-                    
-                if normalized_title not in seen_titles:
-                    seen_titles.add(normalized_title)
-                    filtered_articles.append(article)
+            if article and article.get('url') and article['url'] not in seen_urls:
+                seen_urls.add(article['url'])
+                filtered_articles.append(article)
+
+        # Сортируем по приоритету
+        priority_articles = [a for a in filtered_articles if a.get('priority') or self.is_priority_domain(a.get('url', ''))]
+        regular_articles = [a for a in filtered_articles if a not in priority_articles]
+        
+        filtered_articles = priority_articles + regular_articles
 
         if len(filtered_articles) < 4:
             logger.info("🔍 Дополнительный поиск свежих новостей...")
@@ -765,18 +711,16 @@ class ImprovedNewsSearcher:
                 "ЭПР", 
                 "регуляторная песочница Россия",
                 "экспериментальный правовой режим",
-                "цифровая валюта ЦБ"
+                "цифровая валюта ЦБ",
+                "Банк России новости регулирования"
             ]
             
             for query in backup_queries:
                 try:
                     backup_results = await self.universal_search(query, "all")
                     for article in backup_results:
-                        normalized_title = self.normalize_title(article.get('title', ''))
-                        if (normalized_title not in seen_titles and 
-                            len(normalized_title) >= 20 and
-                            not self.is_duplicate_article(article, filtered_articles)):
-                            seen_titles.add(normalized_title)
+                        if article['url'] not in seen_urls:
+                            seen_urls.add(article['url'])
                             filtered_articles.append(article)
                     await asyncio.sleep(1)
                 except Exception as e:
@@ -786,11 +730,16 @@ class ImprovedNewsSearcher:
             title = article.get('title', '').lower()
             score = 0
             keywords = ['эпр', 'экспериментальный правовой режим', 'регуляторная песочница', 
-                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн']
+                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн', 'банк россии', 'cbr.ru']
             
             for keyword in keywords:
                 if keyword in title:
                     score += 1
+                    
+            # Дополнительные баллы за приоритетные источники
+            if article.get('priority') or self.is_priority_domain(article.get('url', '')):
+                score += 2
+                
             return score
 
         filtered_articles.sort(key=relevance_score, reverse=True)
@@ -839,31 +788,55 @@ class RobustBot:
                 "Универсальный поиск новостей об ЭПР\n\n"
                 "🔍 Поиск новостей – только российские источники\n"
                 "🌍 Международные источники – только зарубежные СМИ\n"
-                "⚡ Свежие новости – актуальные статьи\n"
+                "⚡ Свежие новости – актуальные статьи за сегодня\n"
                 "📊 Быстрый поиск – российские и международные источники\n\n"
-                "Просто выберите что ищете!",
+                "💡 Примеры запросов:\n"
+                "• ЭПР в финансах\n"
+                "• регуляторная песочница\n" 
+                "• цифровые финансовые активы\n"
+                "• Банк России ЭПР\n\n"
+                "Напишите /help для подробной инструкции",
                 reply_markup=main_keyboard
             )
 
         @self.dp.message(Command("help"))
         async def cmd_help(message: types.Message):
-            help_text = """
-📖 Универсальный поиск новостей об ЭПР
+            help_text = """<b>📖 Универсальный поиск новостей об ЭПР</b>
 
-🔍 Поиск новостей – ТОЛЬКО российские источники
-🌍 Международные источники – только зарубежные СМИ
-⚡ Свежие новости – поиск актуальных статей за сегодня
-📊 Быстрый поиск – российские и международные источники
+<b>Доступные команды:</b>
+/start - начать работу с ботом
+/help - показать эту справку
 
-💡 Примеры запросов:
-    • ЭПР в финансах
-• регуляторная песочница
-• новые правила ЭПР
-• Russia fintech regulation
+<b>Режимы поиска:</b>
+🔍 <b>Поиск новостей</b> - ТОЛЬКО российские источники
+🌍 <b>Международные источники</b> - только зарубежные СМИ  
+⚡ <b>Свежие новости</b> - поиск актуальных статей за сегодня
+📊 <b>Быстрый поиск</b> - российские и международные источники
 
-⚡ Кнопка 'Свежие новости' ищет самые актуальные статьи за сегодня!
-"""
-            await message.answer(help_text)
+<b>💡 Примеры успешных запросов:</b>
+
+<b>Короткие запросы:</b>
+• ЭПР
+• регуляторная песочница  
+• Банк России
+• финтех регулирование
+
+<b>Конкретные запросы:</b>
+• ЭПР в банковской сфере
+• экспериментальный правовой режим ЦБ
+• цифровые финансовые активы законодательство
+
+<b>Международные запросы:</b>
+• Russia fintech sandbox
+• digital financial assets Russia
+• Bank of Russia regulation
+
+<b>⚡ Советы для лучших результатов:</b>
+• Используйте короткие запросы (2-5 слов)
+• Для официальных источников: "Банк России ЭПР"
+• Указывайте конкретные термины: "цифровые финансовые активы"
+• Для международных: английские термины"""
+            await message.answer(help_text, parse_mode="HTML")
 
         @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
         async def search_epr_news(message: types.Message):
