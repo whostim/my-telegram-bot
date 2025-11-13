@@ -36,10 +36,8 @@ class GracefulShutdown:
         self._setup_signal_handlers()
     
     def _setup_signal_handlers(self):
-        # Обработка SIGTERM от Render
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
-        # Игнорируем SIGUSR1, чтобы Render мог перезапускать контейнер
         signal.signal(signal.SIGUSR1, signal.SIG_IGN)
     
     def _handle_signal(self, signum, frame):
@@ -130,15 +128,18 @@ class ImprovedNewsSearcher:
         self.session = None
         self.cache = {}
         self.cache_timeout = 300
+        # Расширенный список российских доменов с приоритетом официальных источников
         self.russian_domains = [
+            'cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru',  # Официальные источники
             'rbc.ru', 'vedomosti.ru', 'kommersant.ru', 'ria.ru', 'tass.ru',
             'rt.com', 'lenta.ru', 'gazeta.ru', 'iz.ru', 'mk.ru', 'aif.ru',
             'rg.ru', 'vesti.ru', 'newsru.com', 'fontanka.ru', 'ng.ru',
-            'echo.msk.ru', 'bfm.ru', 'forbes.ru', 'vc.ru', 'rb.ru', 'banki.ru',
-            'cbr.ru', 'rosfinmonitoring.ru', 'government.ru', 'kremlin.ru',
-            'minfin.ru', 'yandex.ru', 'mail.ru', 'rambler.ru',
+            'echo.msk.ru', 'bfm.ru', 'forbes.ru', 'vc.ru', 'rb.ru',
+            'yandex.ru', 'mail.ru', 'rambler.ru',
             'sputniknews.com', 'rbth.com', 'russian.rt.com', 'themoscowtimes.com'
         ]
+        # Приоритетные домены (официальные источники)
+        self.priority_domains = ['cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru']
 
     async def get_session(self):
         if self.session is None or self.session.closed:
@@ -163,6 +164,14 @@ class ImprovedNewsSearcher:
         try:
             domain = urllib.parse.urlparse(url).netloc.lower()
             return any(russian_domain in domain for russian_domain in self.russian_domains)
+        except BaseException:
+            return False
+
+    def is_priority_domain(self, url):
+        """Проверяет, является ли домен приоритетным (официальные источники)"""
+        try:
+            domain = urllib.parse.urlparse(url).netloc.lower()
+            return any(priority_domain in domain for priority_domain in self.priority_domains)
         except BaseException:
             return False
 
@@ -230,6 +239,15 @@ class ImprovedNewsSearcher:
         
         return len(intersection) / len(union) if union else 0
 
+    def truncate_query_for_search(self, query, max_words=8):
+        """Обрезает длинные запросы для улучшения поиска"""
+        words = query.split()
+        if len(words) > max_words:
+            truncated = ' '.join(words[:max_words])
+            logger.info(f"🔧 Обрезан длинный запрос: '{query}' -> '{truncated}'")
+            return truncated
+        return query
+
     async def correct_spelling_auto(self, text):
         """Автоматическая проверка правописания через Yandex Speller API"""
         try:
@@ -274,35 +292,7 @@ class ImprovedNewsSearcher:
             session = await self.get_session()
             encoded_text = urllib.parse.quote(text)
             
-            url = f"https://translate.yandex.net/api/v1.5/tr.json/translate?key=trnsl.1.1.20230101T000000Z.1234567890.abcdef&lang=ru-en&text={encoded_text}"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('code') == 200 and data.get('text'):
-                        translated = data['text'][0]
-                        logger.info(f"🌍 Автоперевод: '{text}' -> '{translated}'")
-                        return translated
-            
-            return await self.translate_fallback(text)
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка перевода: {e}")
-            return await self.translate_fallback(text)
-
-    async def translate_fallback(self, text):
-        """Резервный переводчик"""
-        try:
-            if not self.is_russian_text(text):
-                return text
-                
-            session = await self.get_session()
-            encoded_text = urllib.parse.quote(text)
-            
+            # Используем бесплатный API перевода (замените на ваш ключ при необходимости)
             url = f"https://api.mymemory.translated.net/get?q={encoded_text}&langpair=ru|en"
             
             headers = {
@@ -314,31 +304,36 @@ class ImprovedNewsSearcher:
                     data = await response.json()
                     if data.get('responseData', {}).get('translatedText'):
                         translated = data['responseData']['translatedText']
-                        logger.info(f"🌍 Резервный перевод: '{text}' -> '{translated}'")
+                        logger.info(f"🌍 Автоперевод: '{text}' -> '{translated}'")
                         return translated
             
             return text
         except Exception as e:
-            logger.error(f"❌ Ошибка резервного перевода: {e}")
+            logger.error(f"❌ Ошибка перевода: {e}")
             return text
 
     async def prepare_international_query(self, query):
         """Подготавливает запрос для международного поиска"""
         try:
             logger.info(f"🔧 Подготовка запроса: '{query}'")
-            corrected_query = await self.correct_spelling_auto(query)
+            # Обрезаем длинные запросы
+            truncated_query = self.truncate_query_for_search(query)
+            corrected_query = await self.correct_spelling_auto(truncated_query)
             translated_query = await self.translate_to_english_auto(corrected_query)
             logger.info(f"✅ Подготовленный запрос: '{translated_query}'")
             return translated_query
             
         except Exception as e:
             logger.error(f"❌ Ошибка подготовки запроса: {e}")
-            return query
+            return self.truncate_query_for_search(query)
 
     async def search_yandex_news_direct(self, query):
+        """Улучшенный поиск в Яндекс.Новостях с обработкой длинных запросов"""
         try:
+            # Обрезаем длинные запросы для Яндекс
+            truncated_query = self.truncate_query_for_search(query, max_words=6)
             session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
+            encoded_query = urllib.parse.quote(truncated_query)
             url = f"https://yandex.ru/news/search?text={encoded_query}"
 
             headers = {
@@ -352,7 +347,7 @@ class ImprovedNewsSearcher:
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    news_cards = soup.find_all('article', class_='mg-card')[:8]
+                    news_cards = soup.find_all('article', class_='mg-card')[:10]
 
                     for card in news_cards:
                         try:
@@ -377,7 +372,8 @@ class ImprovedNewsSearcher:
                                 articles.append({
                                     'title': title,
                                     'url': link,
-                                    'language': 'ru'
+                                    'language': 'ru',
+                                    'priority': self.is_priority_domain(link)  # Отмечаем приоритетные источники
                                 })
                         except Exception as e:
                             continue
@@ -392,9 +388,12 @@ class ImprovedNewsSearcher:
             return []
 
     async def search_bing_news_improved(self, query, market='ru-RU', exclude_russian=False):
+        """Улучшенный поиск в Bing News"""
         try:
+            # Обрезаем длинные запросы
+            truncated_query = self.truncate_query_for_search(query)
             session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
+            encoded_query = urllib.parse.quote(truncated_query)
             
             if market == 'en-US':
                 url = f"https://www.bing.com/news/search?q={encoded_query}&cc=us&setlang=en"
@@ -414,11 +413,11 @@ class ImprovedNewsSearcher:
 
                     articles = []
 
-                    news_cards = soup.find_all('div', class_='news-card')[:8]
+                    news_cards = soup.find_all('div', class_='news-card')[:10]
                     if not news_cards:
-                        news_cards = soup.find_all('div', class_='tile')[:8]
+                        news_cards = soup.find_all('div', class_='tile')[:10]
                     if not news_cards:
-                        news_cards = soup.find_all('article')[:8]
+                        news_cards = soup.find_all('article')[:10]
 
                     for card in news_cards:
                         try:
@@ -451,7 +450,8 @@ class ImprovedNewsSearcher:
                                     articles.append({
                                         'title': title,
                                         'url': url,
-                                        'language': 'en' if market == 'en-US' else 'ru'
+                                        'language': 'en' if market == 'en-US' else 'ru',
+                                        'priority': self.is_priority_domain(url)
                                     })
                         except Exception:
                             continue
@@ -467,8 +467,9 @@ class ImprovedNewsSearcher:
 
     async def search_google_news_english(self, query, exclude_russian=True):
         try:
+            truncated_query = self.truncate_query_for_search(query)
             session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
+            encoded_query = urllib.parse.quote(truncated_query)
             url = f"https://news.google.com/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
 
             headers = {
@@ -522,8 +523,9 @@ class ImprovedNewsSearcher:
 
     async def search_duckduckgo_improved(self, query, exclude_russian=True):
         try:
+            truncated_query = self.truncate_query_for_search(query)
             session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
+            encoded_query = urllib.parse.quote(truncated_query)
             url = f"https://html.duckduckgo.com/html/?q={encoded_query}+news&kl=us-en"
 
             headers = {
@@ -581,7 +583,7 @@ class ImprovedNewsSearcher:
             return []
 
     async def search_only_russian(self, query):
-        """Поиск ТОЛЬКО в российских источниках"""
+        """Улучшенный поиск ТОЛЬКО в российских источниках с приоритетом официальных"""
         cache_key = f"russian_only_{hash(query)}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
@@ -605,9 +607,13 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
 
-        # Фильтрация только российских доменов
+        # Улучшенная фильтрация с приоритетом официальных источников
         filtered_results = []
         seen_titles = set()
+        
+        # Сначала добавляем приоритетные статьи (официальные источники)
+        priority_articles = []
+        regular_articles = []
         
         for result in all_results:
             if result and result.get('url'):
@@ -629,16 +635,23 @@ class ImprovedNewsSearcher:
                     
                 if url.startswith('http') and len(url) > 20:
                     normalized_title = self.normalize_title(result.get('title', ''))
-                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
+                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 15:
                         seen_titles.add(normalized_title)
-                        filtered_results.append(result)
+                        
+                        # Разделяем на приоритетные и обычные
+                        if result.get('priority') or self.is_priority_domain(url):
+                            priority_articles.append(result)
+                        else:
+                            regular_articles.append(result)
 
-        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
+        # Сортируем приоритетные статьи первыми
+        filtered_results = priority_articles + regular_articles
         
-        final_results = filtered_results[:6]  # Ограничиваем 6 статьями
+        # Ограничиваем общее количество, но гарантируем место для приоритетных
+        final_results = filtered_results[:8]
         
         self.set_cached_results(cache_key, final_results)
-        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей")
+        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
         return final_results
 
     async def universal_search(self, query, search_type="all"):
@@ -683,9 +696,11 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
-        # Улучшенная фильтрация дубликатов
+        # Улучшенная фильтрация с приоритетом официальных источников
         filtered_results = []
         seen_titles = set()
+        priority_articles = []
+        regular_articles = []
         
         for result in all_results:
             if result and result.get('url'):
@@ -707,15 +722,21 @@ class ImprovedNewsSearcher:
                         
                 if url.startswith('http') and len(url) > 20:
                     normalized_title = self.normalize_title(result.get('title', ''))
-                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 20:
+                    if normalized_title and normalized_title not in seen_titles and len(normalized_title) >= 15:
                         seen_titles.add(normalized_title)
-                        filtered_results.append(result)
+                        
+                        # Разделяем на приоритетные и обычные
+                        if result.get('priority') or (search_type != "international" and self.is_priority_domain(url)):
+                            priority_articles.append(result)
+                        else:
+                            regular_articles.append(result)
 
-        filtered_results.sort(key=lambda x: len(x.get('title', '')), reverse=True)
+        # Сортируем приоритетные статьи первыми
+        filtered_results = priority_articles + regular_articles
         
-        self.set_cached_results(cache_key, filtered_results[:10])
-        logger.info(f"📊 Итоговые уникальные результаты: {len(filtered_results)} статей")
-        return filtered_results[:10]
+        self.set_cached_results(cache_key, filtered_results[:12])
+        logger.info(f"📊 Итоговые уникальные результаты: {len(filtered_results)} статей (приоритетных: {len(priority_articles)})")
+        return filtered_results[:12]
 
     async def get_fresh_news_today(self):
         cache_key = "fresh_news_today"
@@ -731,7 +752,9 @@ class ImprovedNewsSearcher:
             "регуляторная песочница сегодня",
             "экспериментальный правовой режим новости",
             "цифровые финансовые активы",
-            "регуляторные песочницы Россия"
+            "регуляторные песочницы Россия",
+            "Банк России ЭПР",
+            "ЦБ РФ экспериментальный правовой режим"
         ]
 
         all_articles = []
@@ -755,6 +778,8 @@ class ImprovedNewsSearcher:
 
         filtered_articles = []
         seen_titles = set()
+        priority_articles = []
+        regular_articles = []
         
         for article in all_articles:
             if article and article.get('url'):
@@ -767,12 +792,20 @@ class ImprovedNewsSearcher:
                 
                 normalized_title = self.normalize_title(article.get('title', ''))
                 
-                if len(normalized_title) < 20:
+                if len(normalized_title) < 15:
                     continue
                     
                 if normalized_title not in seen_titles:
                     seen_titles.add(normalized_title)
-                    filtered_articles.append(article)
+                    
+                    # Разделяем на приоритетные и обычные
+                    if article.get('priority') or self.is_priority_domain(url):
+                        priority_articles.append(article)
+                    else:
+                        regular_articles.append(article)
+
+        # Объединяем с приоритетом официальных источников
+        filtered_articles = priority_articles + regular_articles
 
         if len(filtered_articles) < 4:
             logger.info("🔍 Дополнительный поиск свежих новостей...")
@@ -780,7 +813,8 @@ class ImprovedNewsSearcher:
                 "ЭПР", 
                 "регуляторная песочница Россия",
                 "экспериментальный правовой режим",
-                "цифровая валюта ЦБ"
+                "цифровая валюта ЦБ",
+                "Банк России новости регулирования"
             ]
             
             for query in backup_queries:
@@ -789,23 +823,34 @@ class ImprovedNewsSearcher:
                     for article in backup_results:
                         normalized_title = self.normalize_title(article.get('title', ''))
                         if (normalized_title not in seen_titles and 
-                            len(normalized_title) >= 20 and
+                            len(normalized_title) >= 15 and
                             not self.is_duplicate_article(article, filtered_articles)):
                             seen_titles.add(normalized_title)
-                            filtered_articles.append(article)
+                            if article.get('priority') or self.is_priority_domain(article.get('url', '')):
+                                priority_articles.append(article)
+                            else:
+                                regular_articles.append(article)
                     await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"❌ Ошибка дополнительного поиска: {e}")
+
+            # Пересобираем filtered_articles
+            filtered_articles = priority_articles + regular_articles
 
         def relevance_score(article):
             title = article.get('title', '').lower()
             score = 0
             keywords = ['эпр', 'экспериментальный правовой режим', 'регуляторная песочница', 
-                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн']
+                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн', 'банк россии', 'cbr.ru']
             
             for keyword in keywords:
                 if keyword in title:
                     score += 1
+                    
+            # Дополнительные баллы за приоритетные источники
+            if article.get('priority') or self.is_priority_domain(article.get('url', '')):
+                score += 2
+                
             return score
 
         filtered_articles.sort(key=relevance_score, reverse=True)
@@ -813,7 +858,7 @@ class ImprovedNewsSearcher:
 
         self.set_cached_results(cache_key, final_articles)
 
-        logger.info(f"✅ Найдено уникальных свежих новостей: {len(final_articles)}")
+        logger.info(f"✅ Найдено уникальных свежих новостей: {len(final_articles)} (приоритетных: {len(priority_articles)})")
         return final_articles
 
     async def close(self):
@@ -851,64 +896,112 @@ class RobustBot:
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             await message.answer(
-                "Универсальный поиск новостей об ЭПР\n\n"
-                "🔍 Поиск новостей – только российские источники\n"
-                "🌍 Международные источники – только зарубежные СМИ\n"
-                "⚡ Свежие новости – актуальные статьи\n"
-                "📊 Быстрый поиск – российские и международные источники\n\n"
-                "Просто выберите что ищете!",
-                reply_markup=main_keyboard
+                "🤖 Универсальный поиск новостей об ЭПР (Экспериментальный Правовой Режим)\n\n"
+                "🔍 <b>Поиск новостей</b> – только российские источники\n"
+                "🌍 <b>Международные источники</b> – только зарубежные СМИ\n"  
+                "⚡ <b>Свежие новости</b> – актуальные статьи за сегодня\n"
+                "📊 <b>Быстрый поиск</b> – российские и международные источники\n\n"
+                "💡 <b>Примеры запросов:</b>\n"
+                "• ЭПР в финансах\n• регуляторная песочница\n• цифровые финансовые активы\n• Банк России ЭПР\n\n"
+                "Напишите /help для подробной инструкции",
+                reply_markup=main_keyboard,
+                parse_mode="HTML"
             )
 
         @self.dp.message(Command("help"))
         async def cmd_help(message: types.Message):
             help_text = """
-📖 Универсальный поиск новостей об ЭПР
+📖 <b>Универсальный поиск новостей об ЭПР</b>
 
-🔍 Поиск новостей – ТОЛЬКО российские источники
-🌍 Международные источники – только зарубежные СМИ
-⚡ Свежие новости – поиск актуальных статей за сегодня
-📊 Быстрый поиск – российские и международные источники
+<b>Доступные команды:</b>
+/start - начать работу с ботом
+/help - показать эту справку
 
-💡 Примеры запросов:
-    • ЭПР в финансах
-• регуляторная песочница
-• новые правила ЭПР
-• Russia fintech regulation
+<b>Режимы поиска:</b>
+🔍 <b>Поиск новостей</b> - ТОЛЬКО российские источники
+🌍 <b>Международные источники</b> - только зарубежные СМИ  
+⚡ <b>Свежие новости</b> - поиск актуальных статей за сегодня
+📊 <b>Быстрый поиск</b> - российские и международные источники
 
-⚡ Кнопка 'Свежие новости' ищет самые актуальные статьи за сегодня!
+💡 <b>Примеры успешных запросов:</b>
+
+<b>Короткие запросы:</b>
+• ЭПР
+• регуляторная песочница  
+• цифровая валюта
+• Банк России
+• финтех регулирование
+
+<b>Конкретные запросы:</b>
+• ЭПР в банковской сфере
+• экспериментальный правовой режим ЦБ
+• новые правила ЭПР 2024
+• цифровые финансовые активы законодательство
+
+<b>Международные запросы:</b>
+• Russia fintech sandbox
+• digital financial assets Russia
+• Bank of Russia regulation
+
+⚡ <b>Советы для лучших результатов:</b>
+• Используйте короткие запросы (2-5 слов)
+• Для официальных источников: "Банк России ЭПР"
+• Указывайте конкретные термины: "цифровые финансовые активы"
+• Для международных: английские термины
+
+🔍 <b>Приоритетные источники:</b>
+• Банк России (cbr.ru)
+• Правительство РФ
+• Министерство финансов
+• Кремлин.ру
 """
-            await message.answer(help_text)
+            await message.answer(help_text, parse_mode="HTML")
 
         @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
         async def search_epr_news(message: types.Message):
             user_id = message.from_user.id
             user_search_type[user_id] = 'russian'
-            await message.answer("🔍 Напишите запрос для поиска новостей в российских источниках:")
+            await message.answer("🔍 <b>Режим: российские источники</b>\n\nВведите запрос для поиска в российских СМИ (например: 'ЭПР Банк России' или 'регуляторная песочница'):", parse_mode="HTML")
 
         @self.dp.message(lambda message: message.text == "🌍 Международные источники")
         async def international_sources(message: types.Message):
             user_id = message.from_user.id
             user_search_type[user_id] = 'international'
-            await message.answer("🌍 Напишите запрос для поиска в международных источниках (автоматический перевод на английский):")
+            await message.answer("🌍 <b>Режим: международные источники</b>\n\nВведите запрос для поиска в зарубежных СМИ (запрос автоматически переведется на английский):", parse_mode="HTML")
 
         @self.dp.message(lambda message: message.text == "⚡ Свежие новости")
         async def fresh_news(message: types.Message):
-            await message.answer("⚡ Ищу самые свежие новости")
+            await message.answer("⚡ <b>Ищу самые свежие новости за сегодня...</b>", parse_mode="HTML")
             try:
                 articles = await self.news_searcher.get_fresh_news_today()
                 if articles:
-                    response = "⚡ Самые свежие новости:\n\n"
-                    for i, article in enumerate(articles, 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
+                    response = "⚡ <b>Самые свежие новости:</b>\n\n"
+                    
+                    # Отделяем приоритетные статьи
+                    priority_articles = [a for a in articles if a.get('priority') or self.news_searcher.is_priority_domain(a.get('url', ''))]
+                    regular_articles = [a for a in articles if not (a.get('priority') or self.news_searcher.is_priority_domain(a.get('url', '')))]
+                    
+                    if priority_articles:
+                        response += "🏛️ <b>Официальные источники:</b>\n\n"
+                        for i, article in enumerate(priority_articles, 1):
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
+                    
+                    if regular_articles:
+                        if priority_articles:
+                            response += "📰 <b>Другие источники:</b>\n\n"
+                        for i, article in enumerate(regular_articles, len(priority_articles) + 1):
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
+                            
                         if len(response) > 3500:
-                            response += "... (показаны первые статьи)"
-                            break
+                            response = response[:3500] + "\n... (показаны первые статьи)"
                 else:
-                    response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
+                    response = "😔 <b>Не удалось найти свежие новости за сегодня.</b>\n\n"
                     response += "💡 Попробуйте использовать поиск по конкретному запросу."
-                await message.answer(response)
+                await message.answer(response, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"❌ Ошибка поиска свежих новостей: {e}")
                 await message.answer("❌ Ошибка при поиске свежих новостей. Попробуйте позже.")
@@ -917,7 +1010,7 @@ class RobustBot:
         async def quick_search(message: types.Message):
             user_id = message.from_user.id
             user_search_type[user_id] = 'quick'
-            await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам (российские и международные):")
+            await message.answer("📊 <b>Режим: быстрый поиск</b>\n\nВведите запрос для поиска по всем источникам (российские и международные):", parse_mode="HTML")
 
         @self.dp.message()
         async def handle_text(message: types.Message):
@@ -936,7 +1029,7 @@ class RobustBot:
             if user_text.startswith('/') or user_text in buttons:
                 return
 
-            await message.answer(f"🔍 Ищу новости по запросу: '{user_text}'...")
+            await message.answer(f"🔍 <b>Ищу новости по запросу:</b> '{user_text}'...", parse_mode="HTML")
             await self.process_search(message, user_text, user_id)
 
     async def process_search(self, message, user_text, user_id):
@@ -950,23 +1043,33 @@ class RobustBot:
                 international_articles = await self.news_searcher.universal_search(international_query, "international")
                 
                 if russian_articles or international_articles:
-                    response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
+                    response = f"🔍 <b>Результаты быстрого поиска по</b> '{user_text}':\n\n"
                     
                     if russian_articles:
-                        response += "🇷🇺 Российские источники:\n\n"
-                        for i, article in enumerate(russian_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                        response += "🇷🇺 <b>Российские источники:</b>\n\n"
+                        count = 0
+                        for article in russian_articles:
+                            if count >= 4:  # Ограничиваем количество
+                                break
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            priority_indicator = "🏛️ " if article.get('priority') or self.news_searcher.is_priority_domain(article['url']) else ""
+                            response += f"{priority_indicator}{article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
+                            count += 1
                     
                     if international_articles:
-                        response += "🌍 Международные источники:\n\n"
-                        start_index = len(russian_articles[:3]) + 1
-                        for i, article in enumerate(international_articles[:3], start_index):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                        response += "🌍 <b>Международные источники:</b>\n\n"
+                        count = 0
+                        for article in international_articles:
+                            if count >= 3:  # Ограничиваем количество
+                                break
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            response += f"{article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
+                            count += 1
                 else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
+                    response = f"😔 <b>По запросу</b> '{user_text}' <b>не найдено новостей.</b>\n\n"
+                    response += "💡 Попробуйте изменить формулировку запроса или использовать более короткие фразы."
                     
             elif search_type == 'international':
                 # Международные источники
@@ -974,68 +1077,89 @@ class RobustBot:
                 articles = await self.news_searcher.universal_search(international_query, "international")
                 
                 if articles:
-                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
+                    response = f"🌍 <b>Результаты международного поиска по</b> '{user_text}':\n\n"
                     for i, article in enumerate(articles[:6], 1):
+                        domain = urllib.parse.urlparse(article['url']).netloc
                         response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
+                        response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
                 else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
+                    response = f"😔 <b>По запросу</b> '{user_text}' <b>не найдено новостей в международных источниках.</b>\n\n"
+                    response += "💡 Попробуйте изменить формулировку запроса или использовать английские термины."
                     
             elif search_type == 'russian':
                 # ТОЛЬКО российские источники
                 articles = await self.news_searcher.search_only_russian(user_text)
                 
                 if articles:
-                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    for i, article in enumerate(articles[:6], 1):
-                        response += f"{i}. {article['title']}\n"
-                        response += f"   🔗 {article['url']}\n\n"
+                    response = f"🔍 <b>Результаты поиска в российских источниках по</b> '{user_text}':\n\n"
+                    
+                    # Группируем по приоритетности
+                    priority_articles = [a for a in articles if a.get('priority') or self.news_searcher.is_priority_domain(a.get('url', ''))]
+                    regular_articles = [a for a in articles if not (a.get('priority') or self.news_searcher.is_priority_domain(a.get('url', '')))]
+                    
+                    if priority_articles:
+                        response += "🏛️ <b>Официальные источники:</b>\n\n"
+                        for i, article in enumerate(priority_articles, 1):
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
+                    
+                    if regular_articles:
+                        start_num = len(priority_articles) + 1
+                        if priority_articles:
+                            response += "📰 <b>Другие российские источники:</b>\n\n"
+                        for i, article in enumerate(regular_articles, start_num):
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            response += f"{i}. {article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
                 else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей в российских источниках.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
+                    response = f"😔 <b>По запросу</b> '{user_text}' <b>не найдено новостей в российских источниках.</b>\n\n"
+                    response += "💡 Попробуйте:\n• Использовать более короткие запросы\n• Конкретные термины: 'ЭПР', 'Банк России'\n• Официальные формулировки: 'экспериментальный правовой режим'"
                     
             else:
-                # По умолчанию: все источники (для текстовых сообщений без выбора типа)
+                # По умолчанию: все источники
                 articles = await self.news_searcher.universal_search(user_text, "all")
                 
                 if articles:
                     russian_articles = [a for a in articles if a.get('language') == 'ru']
                     english_articles = [a for a in articles if a.get('language') == 'en']
 
-                    response = f"🔍 Результаты поиска по '{user_text}':\n\n"
+                    response = f"🔍 <b>Результаты поиска по</b> '{user_text}':\n\n"
 
                     if russian_articles:
-                        response += "🇷🇺 Российские источники:\n\n"
+                        response += "🇷🇺 <b>Российские источники:</b>\n\n"
                         for i, article in enumerate(russian_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                            domain = urllib.parse.urlparse(article['url']).netloc
+                            priority_indicator = "🏛️ " if article.get('priority') or self.news_searcher.is_priority_domain(article['url']) else ""
+                            response += f"{priority_indicator}{article['title']}\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
 
                     if english_articles:
-                        response += "🌍 Международные источники:\n\n"
-                        for i, article in enumerate(english_articles[:3], 1):
+                        response += "🌍 <b>Международные источники:</b>\n\n"
+                        start_index = len(russian_articles[:3]) + 1
+                        for i, article in enumerate(english_articles[:3], start_index):
+                            domain = urllib.parse.urlparse(article['url']).netloc
                             response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                            response += f"   🔗 <i>{domain}</i>\n   {article['url']}\n\n"
                 else:
-                    response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
+                    response = f"😔 <b>По запросу</b> '{user_text}' <b>не найдено новостей.</b>\n\n"
                     response += "💡 Попробуйте изменить формулировку запроса."
 
-            await message.answer(response)
+            await message.answer(response, parse_mode="HTML")
 
         except Exception as e:
             logger.error(f"❌ Ошибка поиска: {e}")
-            await message.answer(f"❌ Ошибка при поиске. Попробуйте другой запрос.")
+            await message.answer(f"❌ <b>Ошибка при поиске.</b> Попробуйте другой запрос или используйте более короткую фразу.", parse_mode="HTML")
 
     async def start(self):
         """Запуск бота с улучшенной обработкой ошибок"""
         try:
-            logger.info("🚀 Запуск бота с разделенным поиском...")
+            logger.info("🚀 Запуск бота с улучшенным поиском...")
             await self.bot.delete_webhook(drop_pending_updates=True)
             
             self._is_running = True
             self._shutdown_event.clear()
             
-            # Polling с улучшенной обработкой ошибок и проверкой shutdown
             while self._is_running and not self._shutdown_event.is_set():
                 try:
                     await self.dp.start_polling(
@@ -1094,22 +1218,18 @@ async def main():
     shutdown_manager = GracefulShutdown()
     
     try:
-        # Запускаем health server первым делом
         health_server = HealthServer()
         await health_server.start()
         
         bot_instance = RobustBot()
         
-        # Запускаем бота в отдельной task
         bot_task = asyncio.create_task(bot_instance.start())
         
         logger.info("✅ Все сервисы запущены, бот готов к работе")
         
-        # Основной цикл проверки состояния
         while not shutdown_manager.shutdown:
             await asyncio.sleep(2)
             
-            # Проверяем, жив ли бот и не запрошена ли остановка
             if bot_task.done() and not shutdown_manager.shutdown:
                 if bot_task.exception():
                     logger.error(f"❌ Бот упал с ошибкой: {bot_task.exception()}")
@@ -1119,7 +1239,6 @@ async def main():
                     logger.warning("⚠️ Бот завершился без ошибки, перезапускаем...")
                     bot_task = asyncio.create_task(bot_instance.start())
         
-        # Graceful shutdown при получении SIGTERM
         logger.info("🔄 Начинаем graceful shutdown...")
         
         if bot_instance:
@@ -1140,24 +1259,22 @@ async def main():
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в main(): {e}")
     finally:
-        # Всегда останавливаем health server
         if health_server:
             await health_server.stop()
         
         if bot_instance:
             await bot_instance.stop()
 
-# ===== ЗАПУСК ПРИЛОЖЕНИЯ С БЕСКОНЕЧНЫМИ ПЕРЕЗАПУСКАМИ =====
+# ===== ЗАПУСК ПРИЛОЖЕНИЯ =====
 if __name__ == "__main__":
     import time
     
-    restart_delay = 3  # Начальная задержка в секундах
-    max_restart_delay = 300  # Максимальная задержка (5 минут)
-    total_restarts = 0  # Счетчик перезапусков для логов
+    restart_delay = 3
+    max_restart_delay = 300
+    total_restarts = 0
     
-    logger.info("♾️ Запуск бота с разделенным поиском и бесконечными перезапусками")
+    logger.info("♾️ Запуск бота с улучшенным поиском и бесконечными перезапусками")
     
-    # Бесконечный цикл перезапусков
     while True:
         try:
             total_restarts += 1
@@ -1165,10 +1282,9 @@ if __name__ == "__main__":
             
             asyncio.run(main())
             
-            # Если main() завершился без исключения, значит бот остановился корректно
             logger.info("✅ Бот завершил работу корректно, перезапускаем через 5 секунд...")
             time.sleep(5)
-            restart_delay = 3  # Сбрасываем задержку при успешном завершении
+            restart_delay = 3
             
         except KeyboardInterrupt:
             logger.info("⏹️ Остановка по запросу пользователя")
