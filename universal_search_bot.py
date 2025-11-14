@@ -385,12 +385,12 @@ class ImprovedNewsSearcher:
                 url = f"https://www.bing.com/news/search?q={encoded_query}&cc={market}"
 
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9' if market == 'en-US' else 'ru-RU,ru;q=0.9',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
 
-            async with session.get(url, headers=headers, timeout=15) as response:
+            async with session.get(url, headers=headers, timeout=20) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
@@ -421,6 +421,10 @@ class ImprovedNewsSearcher:
 
                                 # Убираем фильтрацию bing search страниц
                                 if url and url.startswith('http'):
+                                    # Для международного поиска пропускаем русские домены
+                                    if exclude_russian and self.is_russian_domain(url):
+                                        continue
+                                        
                                     articles.append({
                                         'title': title,
                                         'url': url,
@@ -439,68 +443,91 @@ class ImprovedNewsSearcher:
             logger.debug(f"Ошибка Bing News: {e}")
             return []
 
-    async def search_google_news_english(self, query, exclude_russian=True):
+    async def search_google_news_international(self, query):
+        """Улучшенный поиск в Google News для международных источников"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
             url = f"https://news.google.com/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
 
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
 
-            async with session.get(url, headers=headers, timeout=15) as response:
+            async with session.get(url, headers=headers, timeout=20) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    news_cards = soup.find_all('article')[:15]
+                    # Ищем все статьи
+                    news_articles = soup.find_all('article')[:20]
 
-                    for card in news_cards:
+                    for article in news_articles:
                         try:
-                            title_elem = card.find('h3') or card.find('h4') or card.find('a', attrs={'href': True})
-                            if title_elem:
-                                title = title_elem.get_text().strip()
-                                link_elem = title_elem.find_parent('a') if title_elem.name != 'a' else title_elem
-                                if link_elem and link_elem.get('href'):
-                                    url = link_elem.get('href')
-                                    if url.startswith('./'):
-                                        url = f"https://news.google.com{url[1:]}"
+                            # Ищем заголовок
+                            title_elem = article.find('h3') or article.find('h4') or article.find('a')
+                            if not title_elem:
+                                continue
+                                
+                            title = title_elem.get_text().strip()
+                            
+                            # Ищем ссылку
+                            link_elem = article.find('a')
+                            if link_elem and link_elem.get('href'):
+                                relative_url = link_elem.get('href')
+                                # Преобразуем относительную ссылку в абсолютную
+                                if relative_url.startswith('./'):
+                                    full_url = f"https://news.google.com{relative_url[1:]}"
+                                else:
+                                    full_url = f"https://news.google.com{relative_url}" if relative_url.startswith('/') else relative_url
+                                
+                                # Пропускаем ссылки на сам Google News
+                                if 'news.google.com' in full_url:
+                                    continue
                                     
-                                    if url and url.startswith('http'):
-                                        articles.append({
-                                            'title': title,
-                                            'url': url,
-                                            'language': 'en'
-                                        })
-                        except Exception:
+                                # Пропускаем русские домены
+                                if self.is_russian_domain(full_url):
+                                    continue
+                                
+                                articles.append({
+                                    'title': title,
+                                    'url': full_url,
+                                    'language': 'en',
+                                    'source': 'google'
+                                })
+                                
+                        except Exception as e:
+                            logger.debug(f"Ошибка парсинга статьи Google: {e}")
                             continue
 
+                    logger.info(f"✅ Google News International: найдено {len(articles)} статей")
                     return articles
+                    
             return []
         except asyncio.TimeoutError:
-            logger.warning("⏰ Таймаут при поиске в Google News")
+            logger.warning("⏰ Таймаут при поиске в Google News International")
             return []
         except Exception as e:
-            logger.debug(f"Ошибка Google News: {e}")
+            logger.error(f"❌ Ошибка Google News International: {e}")
             return []
 
-    async def search_duckduckgo_improved(self, query, exclude_russian=True):
+    async def search_duckduckgo_international(self, query):
+        """Улучшенный поиск в DuckDuckGo для международных источников"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
             url = f"https://html.duckduckgo.com/html/?q={encoded_query}+news&kl=us-en"
 
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             }
 
-            async with session.get(url, headers=headers, timeout=15) as response:
+            async with session.get(url, headers=headers, timeout=20) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
@@ -515,27 +542,37 @@ class ImprovedNewsSearcher:
                                 title = title_elem.get_text().strip()
                                 url = title_elem.get('href', '')
 
+                                # Обрабатываем DuckDuckGo redirect
                                 if 'duckduckgo.com' in url:
                                     match = re.search(r'uddg=([^&]+)', url)
                                     if match:
                                         url = urllib.parse.unquote(match.group(1))
 
+                                # Пропускаем поисковые страницы и русские домены
+                                if any(domain in url for domain in ['google.com/search', 'bing.com/search', 'yandex.ru/search']):
+                                    continue
+                                    
+                                if self.is_russian_domain(url):
+                                    continue
+
                                 if url and url.startswith('http'):
                                     articles.append({
                                         'title': title,
                                         'url': url,
-                                        'language': 'en'
+                                        'language': 'en',
+                                        'source': 'duckduckgo'
                                     })
                         except Exception:
                             continue
 
+                    logger.info(f"✅ DuckDuckGo International: найдено {len(articles)} статей")
                     return articles
             return []
         except asyncio.TimeoutError:
             logger.warning("⏰ Таймаут при поиске в DuckDuckGo")
             return []
         except Exception as e:
-            logger.debug(f"Ошибка DuckDuckGo: {e}")
+            logger.error(f"❌ Ошибка DuckDuckGo International: {e}")
             return []
 
     async def search_only_russian(self, query):
@@ -591,6 +628,62 @@ class ImprovedNewsSearcher:
         logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
         return final_results
 
+    async def search_international_only(self, query):
+        """Поиск ТОЛЬКО в международных источниках"""
+        cache_key = f"international_only_{hash(query)}"
+        cached_results = self.get_cached_results(cache_key)
+        if cached_results:
+            logger.info("✅ Используем кэшированные результаты (международные)")
+            return cached_results
+
+        logger.info(f"🌍 Поиск в международных источниках: {query}")
+
+        all_results = []
+
+        try:
+            # Подготавливаем запрос для международного поиска
+            international_query = await self.prepare_international_query(query)
+            logger.info(f"🌍 Подготовленный запрос: {international_query}")
+
+            # Поиск в международных источниках
+            google_results = await self.search_google_news_international(international_query)
+            all_results.extend(google_results)
+            logger.info(f"✅ Google News International: {len(google_results)} статей")
+
+            bing_en_results = await self.search_bing_news_improved(international_query, 'en-US', exclude_russian=True)
+            all_results.extend(bing_en_results)
+            logger.info(f"✅ Bing International: {len(bing_en_results)} статей")
+
+            duckduckgo_results = await self.search_duckduckgo_international(international_query)
+            all_results.extend(duckduckgo_results)
+            logger.info(f"✅ DuckDuckGo International: {len(duckduckgo_results)} статей")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка в международном поиске: {e}")
+
+        # Фильтрация только международных источников
+        filtered_results = []
+        seen_urls = set()
+        
+        for result in all_results:
+            if result and result.get('url'):
+                url = result['url'].lower()
+                
+                # Пропускаем русские домены
+                if self.is_russian_domain(url):
+                    continue
+                    
+                if url.startswith('http') and url not in seen_urls:
+                    seen_urls.add(url)
+                    filtered_results.append(result)
+
+        # Ограничиваем количество результатов
+        final_results = filtered_results[:10]
+        
+        self.set_cached_results(cache_key, final_results)
+        logger.info(f"📊 Итоговые международные результаты: {len(final_results)} статей")
+        return final_results
+
     async def universal_search(self, query, search_type="all"):
         cache_key = f"{search_type}_{query}"
         cached_results = self.get_cached_results(cache_key)
@@ -615,20 +708,9 @@ class ImprovedNewsSearcher:
             if search_type in ["all", "international"]:
                 logger.info(f"🌍 Поиск в международных источниках: {query}")
 
-                international_query = await self.prepare_international_query(query)
-                logger.info(f"🌍 Подготовленный запрос: {international_query}")
-
-                google_results = await self.search_google_news_english(international_query, exclude_russian=True)
-                all_results.extend(google_results)
-                logger.info(f"✅ Google News: {len(google_results)} статей")
-
-                bing_en_results = await self.search_bing_news_improved(international_query, 'en-US', exclude_russian=True)
-                all_results.extend(bing_en_results)
-                logger.info(f"✅ Bing International: {len(bing_en_results)} статей")
-
-                duckduckgo_results = await self.search_duckduckgo_improved(international_query, exclude_russian=True)
-                all_results.extend(duckduckgo_results)
-                logger.info(f"✅ DuckDuckGo: {len(duckduckgo_results)} статей")
+                international_results = await self.search_international_only(query)
+                all_results.extend(international_results)
+                logger.info(f"✅ Все международные источники: {len(international_results)} статей")
 
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
@@ -833,8 +915,8 @@ class RobustBot:
 
 <b>⚡ Советы для лучших результатов:</b>
 • Используйте короткие запросы (2-5 слов)
-• Для официальных источников: "Банк России ЭПР"
-• Указывайте конкретные термины: "цифровые финансовые активы"
+• Для официальных источников: \"Банк России ЭПР\"
+• Указывайте конкретные термины: \"цифровые финансовые активы\"
 • Для международных: английские термины"""
             await message.answer(help_text, parse_mode="HTML")
 
@@ -904,8 +986,7 @@ class RobustBot:
             if search_type == 'quick':
                 # Быстрый поиск: российские + международные источники
                 russian_articles = await self.news_searcher.universal_search(user_text, "russian")
-                international_query = await self.news_searcher.prepare_international_query(user_text)
-                international_articles = await self.news_searcher.universal_search(international_query, "international")
+                international_articles = await self.news_searcher.search_international_only(user_text)
                 
                 if russian_articles or international_articles:
                     response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
@@ -928,8 +1009,7 @@ class RobustBot:
                     
             elif search_type == 'international':
                 # Международные источники
-                international_query = await self.news_searcher.prepare_international_query(user_text)
-                articles = await self.news_searcher.universal_search(international_query, "international")
+                articles = await self.news_searcher.search_international_only(user_text)
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
@@ -938,7 +1018,7 @@ class RobustBot:
                         response += f"   🔗 {article['url']}\n\n"
                 else:
                     response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса."
+                    response += "💡 Попробуйте изменить формулировку запроса или использовать английские термины."
                     
             elif search_type == 'russian':
                 # ТОЛЬКО российские источники
@@ -1150,4 +1230,3 @@ if __name__ == "__main__":
             restart_delay = min(restart_delay * 1.5, max_restart_delay)
     
     logger.info(f"👋 Бот завершил работу после {total_restarts} перезапусков")
-
