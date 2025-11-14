@@ -17,7 +17,7 @@ import atexit
 import signal
 from aiohttp import web
 import threading
-import psutil
+import subprocess
 import time
 
 # ===== УЛУЧШЕННАЯ КОНФИГУРАЦИЯ ЛОГГИРОВАНИЯ =====
@@ -57,28 +57,76 @@ def cleanup_lock():
         logger.error(f"⚠️ Ошибка при удалении lock-файла: {e}")
 
 def kill_previous_instances():
-    """Принудительное завершение предыдущих процессов бота"""
+    """Принудительное завершение предыдущих процессов бота без psutil"""
     try:
         current_pid = os.getpid()
-        current_script = os.path.abspath(__file__)
+        script_name = "universal_search_bot.py"
         
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                # Ищем процессы Python с нашим скриптом
-                if (proc.info['pid'] != current_pid and 
-                    proc.info['cmdline'] and 
-                    any('python' in part.lower() for part in proc.info['cmdline']) and
-                    any('universal_search_bot' in part for part in proc.info['cmdline'])):
-                    
-                    logger.info(f"🚫 Завершаем предыдущий процесс бота: PID {proc.info['pid']}")
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                    
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-                continue
-                
+        # Используем pgrep для поиска процессов с нашим скриптом
+        try:
+            result = subprocess.run(
+                ['pgrep', '-f', script_name], 
+                capture_output=True, 
+                text=True
+            )
+            
+            if result.returncode == 0:
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    pid = pid.strip()
+                    if pid and pid != str(current_pid):
+                        logger.info(f"🚫 Завершаем предыдущий процесс бота: PID {pid}")
+                        try:
+                            # Сначала пытаемся корректно завершить
+                            os.kill(int(pid), signal.SIGTERM)
+                            time.sleep(2)
+                            
+                            # Проверяем, завершился ли процесс
+                            try:
+                                os.kill(int(pid), 0)
+                                # Если процесс еще жив, принудительно завершаем
+                                os.kill(int(pid), signal.SIGKILL)
+                                logger.info(f"💀 Принудительно завершен процесс: PID {pid}")
+                            except ProcessLookupError:
+                                logger.info(f"✅ Процесс завершен корректно: PID {pid}")
+                                
+                        except (ProcessLookupError, ValueError) as e:
+                            logger.debug(f"Процесс уже завершен: {pid}")
+                            
+        except FileNotFoundError:
+            logger.warning("⚠️ pgrep не найден, пропускаем завершение предыдущих процессов")
+            
+        # Альтернативный метод через ps
+        try:
+            result = subprocess.run(
+                ['ps', 'aux'], 
+                capture_output=True, 
+                text=True
+            )
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if script_name in line and str(current_pid) not in line:
+                        parts = line.split()
+                        if len(parts) > 1:
+                            pid = parts[1]
+                            if pid.isdigit() and pid != str(current_pid):
+                                logger.info(f"🚫 Завершаем процесс через ps: PID {pid}")
+                                try:
+                                    os.kill(int(pid), signal.SIGTERM)
+                                    time.sleep(1)
+                                    try:
+                                        os.kill(int(pid), 0)
+                                        os.kill(int(pid), signal.SIGKILL)
+                                    except ProcessLookupError:
+                                        pass
+                                except (ProcessLookupError, ValueError):
+                                    pass
+        except Exception as e:
+            logger.debug(f"Ошибка при использовании ps: {e}")
+            
     except Exception as e:
-        logger.warning(f"⚠️ Ошибка при завершении предыдущих процессов: {e}")
+        logger.warning(f"⚠️ Ошибка в kill_previous_instances: {e}")
 
 def check_single_instance():
     """Улучшенная проверка единственного экземпляра"""
