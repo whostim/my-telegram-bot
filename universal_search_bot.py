@@ -140,6 +140,15 @@ class ImprovedNewsSearcher:
         ]
         # Приоритетные домены (официальные источники)
         self.priority_domains = ['cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru']
+        
+        # Черный список паттернов для URL (общие новостные страницы)
+        # УБРАНЫ крипто-паттерны: /crypto/, /cryptocurrency/, /bitcoin/
+        self.url_blacklist_patterns = [
+            r'/news/?$', r'/latest/?$', r'/trending/?$', r'/top-news/?$',
+            r'/headlines/?$', r'/breaking/?$', r'/updates/?$', r'/analysis/?$',
+            r'/market-news/?$', r'/section/', r'/category/', r'/tag/', r'/topic/',
+            r'news\.google\.com$', r'news\.google\.com/',
+        ]
 
     async def get_session(self):
         if self.session is None or self.session.closed:
@@ -177,6 +186,48 @@ class ImprovedNewsSearcher:
 
     def is_russian_text(self, text):
         return bool(re.search('[а-яА-Я]', text))
+
+    def is_specific_article_url(self, url):
+        """
+        Проверяет, является ли URL конкретной статьей, а не общей новостной страницей
+        """
+        try:
+            url_lower = url.lower()
+            parsed = urllib.parse.urlparse(url_lower)
+            path = parsed.path
+            
+            # Проверяем черный список паттернов (крипто-паттерны УБРАНЫ)
+            for pattern in self.url_blacklist_patterns:
+                if re.search(pattern, url_lower):
+                    return False
+            
+            # Проверяем, что URL содержит признаки конкретной статьи
+            article_indicators = [
+                r'/\d{4}/', r'/\d{2}/',  # содержит дату
+                r'-\d+\.', r'/\d+',      # содержит цифры (ID статьи)
+                r'\.html', r'\.php', r'\.aspx',  # конкретная страница
+                r'/article/', r'/story/', r'/news/', r'/post/',  # пути статей
+                r'cryptonews\.com/article/',  # конкретные домены с статьями
+                r'coindesk\.com/', r'decrypt\.co/',  # доверенные источники
+            ]
+            
+            for indicator in article_indicators:
+                if re.search(indicator, url_lower):
+                    return True
+            
+            # Если URL короткий (меньше 40 символов), вероятно это не статья
+            if len(url) < 40:
+                return False
+                
+            # Если путь содержит много слешей, вероятно это статья
+            if path.count('/') >= 3:
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Ошибка проверки URL: {e}")
+            return True  # В случае ошибки принимаем URL
 
     def normalize_title(self, title):
         """Нормализация заголовка для сравнения"""
@@ -353,8 +404,8 @@ class ImprovedNewsSearcher:
                             elif link.startswith('/'):
                                 link = f"https://yandex.ru{link}"
 
-                            # Убираем фильтрацию поисковых страниц - принимаем все ссылки
-                            if link and link.startswith('http'):
+                            # Проверяем, что это конкретная статья, а не общая страница
+                            if link and link.startswith('http') and self.is_specific_article_url(link):
                                 articles.append({
                                     'title': title,
                                     'url': link,
@@ -419,8 +470,8 @@ class ImprovedNewsSearcher:
                                 if url.startswith('/'):
                                     url = f"https://www.bing.com{url}"
 
-                                # Убираем фильтрацию bing search страниц
-                                if url and url.startswith('http'):
+                                # Проверяем, что это конкретная статья
+                                if url and url.startswith('http') and self.is_specific_article_url(url):
                                     # Для международного поиска пропускаем русские домены
                                     if exclude_russian and self.is_russian_domain(url):
                                         continue
@@ -492,12 +543,14 @@ class ImprovedNewsSearcher:
                                 if self.is_russian_domain(full_url):
                                     continue
                                 
-                                articles.append({
-                                    'title': title,
-                                    'url': full_url,
-                                    'language': 'en',
-                                    'source': 'google'
-                                })
+                                # Проверяем, что это конкретная статья
+                                if self.is_specific_article_url(full_url):
+                                    articles.append({
+                                        'title': title,
+                                        'url': full_url,
+                                        'language': 'en',
+                                        'source': 'google'
+                                    })
                                 
                         except Exception as e:
                             logger.debug(f"Ошибка парсинга статьи Google: {e}")
@@ -555,7 +608,8 @@ class ImprovedNewsSearcher:
                                 if self.is_russian_domain(url):
                                     continue
 
-                                if url and url.startswith('http'):
+                                # Проверяем, что это конкретная статья
+                                if url and url.startswith('http') and self.is_specific_article_url(url):
                                     articles.append({
                                         'title': title,
                                         'url': url,
@@ -609,8 +663,8 @@ class ImprovedNewsSearcher:
             if result and result.get('url'):
                 url = result['url'].lower()
                 
-                # Убираем фильтрацию поисковых страниц - принимаем все
-                if url.startswith('http') and url not in seen_urls:
+                # Проверяем, что это конкретная статья
+                if url.startswith('http') and url not in seen_urls and self.is_specific_article_url(url):
                     seen_urls.add(url)
                     filtered_results.append(result)
 
@@ -661,7 +715,7 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в международном поиске: {e}")
 
-        # Фильтрация только международных источников
+        # Фильтрация только международных источников и конкретных статей
         filtered_results = []
         seen_urls = set()
         
@@ -669,11 +723,8 @@ class ImprovedNewsSearcher:
             if result and result.get('url'):
                 url = result['url'].lower()
                 
-                # Пропускаем русские домены
-                if self.is_russian_domain(url):
-                    continue
-                    
-                if url.startswith('http') and url not in seen_urls:
+                # Пропускаем русские домены и проверяем, что это конкретная статья
+                if not self.is_russian_domain(url) and url.startswith('http') and url not in seen_urls and self.is_specific_article_url(url):
                     seen_urls.add(url)
                     filtered_results.append(result)
 
@@ -715,12 +766,12 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
-        # Упрощенная фильтрация - только по уникальности URL
+        # Упрощенная фильтрация - только по уникальности URL и конкретным статьям
         filtered_results = []
         seen_urls = set()
         
         for result in all_results:
-            if result and result.get('url') and result['url'] not in seen_urls:
+            if result and result.get('url') and result['url'] not in seen_urls and self.is_specific_article_url(result['url']):
                 seen_urls.add(result['url'])
                 filtered_results.append(result)
 
@@ -763,7 +814,7 @@ class ImprovedNewsSearcher:
                 bing_results = await self.search_bing_news_improved(query, 'ru-RU')
 
                 for article in yandex_results + bing_results:
-                    if not self.is_duplicate_article(article, all_articles):
+                    if not self.is_duplicate_article(article, all_articles) and self.is_specific_article_url(article['url']):
                         all_articles.append(article)
 
                 await asyncio.sleep(1)
@@ -777,7 +828,7 @@ class ImprovedNewsSearcher:
         seen_urls = set()
         
         for article in all_articles:
-            if article and article.get('url') and article['url'] not in seen_urls:
+            if article and article.get('url') and article['url'] not in seen_urls and self.is_specific_article_url(article['url']):
                 seen_urls.add(article['url'])
                 filtered_articles.append(article)
 
@@ -801,7 +852,7 @@ class ImprovedNewsSearcher:
                 try:
                     backup_results = await self.universal_search(query, "all")
                     for article in backup_results:
-                        if article['url'] not in seen_urls:
+                        if article['url'] not in seen_urls and self.is_specific_article_url(article['url']):
                             seen_urls.add(article['url'])
                             filtered_articles.append(article)
                     await asyncio.sleep(1)
