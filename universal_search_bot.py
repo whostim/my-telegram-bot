@@ -135,11 +135,11 @@ class ImprovedNewsSearcher:
             'rt.com', 'lenta.ru', 'gazeta.ru', 'iz.ru', 'mk.ru', 'aif.ru',
             'rg.ru', 'vesti.ru', 'newsru.com', 'fontanka.ru', 'ng.ru',
             'echo.msk.ru', 'bfm.ru', 'forbes.ru', 'vc.ru', 'rb.ru',
-            'yandex.ru', 'mail.ru', 'rambler.ru',
+            'yandex.ru', 'mail.ru', 'rambler.ru', 'interfax.ru', 'banki.ru', 'banknn.ru',  # ДОБАВЛЕНЫ недостающие домены
             'sputniknews.com', 'rbth.com', 'russian.rt.com', 'themoscowtimes.com'
         ]
         # Приоритетные домены (официальные источники)
-        self.priority_domains = ['cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru']
+        self.priority_domains = ['cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru', 'interfax.ru']
         
         # Черный список паттернов для URL (общие новостные страницы)
         # УБРАНЫ крипто-паттерны: /crypto/, /cryptocurrency/, /bitcoin/
@@ -368,35 +368,68 @@ class ImprovedNewsSearcher:
             return query
 
     async def search_yandex_news_direct(self, query):
-        """Улучшенный поиск в Яндекс.Новостях"""
+        """УЛУЧШЕННЫЙ поиск в Яндекс.Новостях - исправлена основная проблема"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
             url = f"https://yandex.ru/news/search?text={encoded_query}"
 
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://yandex.ru/',
             }
 
-            async with session.get(url, headers=headers, timeout=15) as response:
+            async with session.get(url, headers=headers, timeout=20) as response:  # Увеличил таймаут
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
 
                     articles = []
-                    # Увеличиваем количество проверяемых карточек
-                    news_cards = soup.find_all('article', class_='mg-card')[:15]
+                    
+                    # РАСШИРЕННЫЙ поиск карточек новостей
+                    news_cards = soup.find_all('article', class_='mg-card')
+                    
+                    # ДОПОЛНИТЕЛЬНЫЙ поиск по другим классам
+                    if not news_cards:
+                        news_cards = soup.find_all('div', class_='news-card')
+                    if not news_cards:
+                        news_cards = soup.find_all('div', class_=re.compile(r'card|news|article'))
+                    
+                    # Ищем все возможные новостные блоки
+                    all_news_blocks = soup.find_all(['article', 'div'], class_=re.compile(r'mg-card|news-card|card|news|article'))
+                    
+                    # Объединяем все найденные блоки
+                    all_blocks = news_cards + all_news_blocks
+                    logger.info(f"🔍 Найдено новостных блоков: {len(all_blocks)}")
 
-                    for card in news_cards:
+                    for card in all_blocks[:25]:  # Увеличил лимит
                         try:
-                            title_elem = card.find('h2', class_='mg-card__title') or card.find('a', class_='mg-card__link')
+                            # РАСШИРЕННЫЙ поиск заголовков
+                            title_elem = (card.find('h2', class_='mg-card__title') or 
+                                        card.find('a', class_='mg-card__link') or
+                                        card.find('h2') or 
+                                        card.find('h3') or
+                                        card.find('a', class_=re.compile(r'title|headline|news')) or
+                                        card.find('div', class_=re.compile(r'title|headline')))
+                            
                             if not title_elem:
                                 continue
 
                             title = title_elem.get_text().strip()
-                            link = title_elem.get('href', '')
+                            
+                            # РАСШИРЕННЫЙ поиск ссылок
+                            link_elem = (card.find('a', class_='mg-card__link') or
+                                       card.find('a', href=True) or
+                                       title_elem if title_elem.name == 'a' else None)
+                            
+                            if not link_elem or not link_elem.get('href'):
+                                continue
+                                
+                            link = link_elem.get('href', '')
 
+                            # Обработка ссылок Яндекс
                             if link.startswith('https://news.yandex.ru/yandsearch?'):
                                 match = re.search(r'cl4url=([^&]+)', link)
                                 if match:
@@ -404,24 +437,43 @@ class ImprovedNewsSearcher:
                             elif link.startswith('/'):
                                 link = f"https://yandex.ru{link}"
 
-                            # Проверяем, что это конкретная статья, а не общая страница
-                            if link and link.startswith('http') and self.is_specific_article_url(link):
-                                articles.append({
-                                    'title': title,
-                                    'url': link,
-                                    'language': 'ru',
-                                    'priority': self.is_priority_domain(link)
-                                })
+                            # УПРОЩЕННАЯ проверка - принимаем больше статей
+                            if (link and link.startswith('http') and 
+                                (self.is_specific_article_url(link) or self.is_russian_domain(link))):
+                                
+                                # Проверяем релевантность по заголовку
+                                title_lower = title.lower()
+                                query_lower = query.lower()
+                                
+                                # Если заголовок содержит слова из запроса, считаем релевантным
+                                query_words = set(query_lower.split())
+                                title_words = set(title_lower.split())
+                                common_words = query_words.intersection(title_words)
+                                
+                                if len(common_words) >= 1:  # Уменьшил порог релевантности
+                                    articles.append({
+                                        'title': title,
+                                        'url': link,
+                                        'language': 'ru',
+                                        'priority': self.is_priority_domain(link),
+                                        'relevance_score': len(common_words)  # Добавил оценку релевантности
+                                    })
+                                    
                         except Exception as e:
+                            logger.debug(f"Ошибка обработки карточки: {e}")
                             continue
 
+                    # Сортируем по релевантности
+                    articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+                    logger.info(f"✅ Яндекс.Новости: найдено {len(articles)} релевантных статей")
                     return articles
+                    
             return []
         except asyncio.TimeoutError:
             logger.warning("⏰ Таймаут при поиске в Яндекс.Новостях")
             return []
         except Exception as e:
-            logger.debug(f"Ошибка Яндекс.Новостей: {e}")
+            logger.error(f"❌ Ошибка Яндекс.Новостей: {e}")
             return []
 
     async def search_bing_news_improved(self, query, market='ru-RU', exclude_russian=False):
@@ -630,19 +682,19 @@ class ImprovedNewsSearcher:
             return []
 
     async def search_only_russian(self, query):
-        """Улучшенный поиск ТОЛЬКО в российских источниках"""
+        """УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских источниках - основное исправление"""
         cache_key = f"russian_only_{hash(query)}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
             logger.info("✅ Используем кэшированные результаты (только российские)")
             return cached_results
 
-        logger.info(f"🔍 Поиск ТОЛЬКО в российских источниках: {query}")
+        logger.info(f"🔍 УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских источниках: {query}")
 
         all_results = []
 
         try:
-            # Только российские источники
+            # УЛУЧШЕННЫЙ поиск в российских источниках
             yandex_results = await self.search_yandex_news_direct(query)
             all_results.extend(yandex_results)
             logger.info(f"✅ Яндекс.Новости: {len(yandex_results)} статей")
@@ -654,29 +706,34 @@ class ImprovedNewsSearcher:
         except Exception as e:
             logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
 
-        # Улучшенная фильтрация с приоритетом официальных источников
+        # УПРОЩЕННАЯ фильтрация - принимаем больше результатов
         filtered_results = []
         seen_urls = set()
         
-        # Сначала собираем все результаты
         for result in all_results:
             if result and result.get('url'):
                 url = result['url'].lower()
                 
-                # Проверяем, что это конкретная статья
-                if url.startswith('http') and url not in seen_urls and self.is_specific_article_url(url):
+                # УПРОЩЕННАЯ проверка - принимаем больше статей
+                if (url.startswith('http') and 
+                    url not in seen_urls and 
+                    (self.is_specific_article_url(url) or self.is_russian_domain(url))):
+                    
                     seen_urls.add(url)
                     filtered_results.append(result)
 
-        # Сортируем: сначала приоритетные, потом остальные
+        # Сортируем: сначала приоритетные, потом по релевантности
         priority_articles = [r for r in filtered_results if r.get('priority') or self.is_priority_domain(r['url'])]
         regular_articles = [r for r in filtered_results if not (r.get('priority') or self.is_priority_domain(r['url']))]
+        
+        # Сортируем регулярные статьи по релевантности
+        regular_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
         
         # Объединяем с приоритетом официальных источников
         final_results = priority_articles + regular_articles
         
         # Возвращаем больше результатов
-        final_results = final_results[:10]
+        final_results = final_results[:12]  # Увеличил лимит
         
         self.set_cached_results(cache_key, final_results)
         logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
