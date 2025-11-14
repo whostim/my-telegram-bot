@@ -17,6 +17,8 @@ import atexit
 import signal
 from aiohttp import web
 import threading
+import psutil
+import time
 
 # ===== УЛУЧШЕННАЯ КОНФИГУРАЦИЯ ЛОГГИРОВАНИЯ =====
 logging.basicConfig(
@@ -45,6 +47,7 @@ class GracefulShutdown:
         self.shutdown = True
 
 def cleanup_lock():
+    """Удаление файла блокировки при завершении"""
     try:
         lock_file = "/tmp/telegram-bot.lock"
         if os.path.exists(lock_file):
@@ -53,20 +56,72 @@ def cleanup_lock():
     except Exception as e:
         logger.error(f"⚠️ Ошибка при удалении lock-файла: {e}")
 
+def kill_previous_instances():
+    """Принудительное завершение предыдущих процессов бота"""
+    try:
+        current_pid = os.getpid()
+        current_script = os.path.abspath(__file__)
+        
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                # Ищем процессы Python с нашим скриптом
+                if (proc.info['pid'] != current_pid and 
+                    proc.info['cmdline'] and 
+                    any('python' in part.lower() for part in proc.info['cmdline']) and
+                    any('universal_search_bot' in part for part in proc.info['cmdline'])):
+                    
+                    logger.info(f"🚫 Завершаем предыдущий процесс бота: PID {proc.info['pid']}")
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                    
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                continue
+                
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при завершении предыдущих процессов: {e}")
+
 def check_single_instance():
+    """Улучшенная проверка единственного экземпляра"""
     try:
         lock_file = "/tmp/telegram-bot.lock"
+        
+        # Сначала пытаемся завершить предыдущие процессы
+        kill_previous_instances()
+        time.sleep(2)  # Даем время для завершения
+        
+        # Проверяем существующий lock-файл
         if os.path.exists(lock_file):
             with open(lock_file, 'r') as f:
                 old_pid = f.read().strip()
+            
             try:
+                # Проверяем, жив ли процесс
                 os.kill(int(old_pid), 0)
                 logger.info(f"❌ Бот уже запущен в процессе {old_pid}. Завершаем.")
-                sys.exit(1)
+                
+                # Пытаемся корректно завершить старый процесс
+                try:
+                    os.kill(int(old_pid), signal.SIGTERM)
+                    time.sleep(3)
+                except:
+                    pass
+                    
+                # Если процесс все еще жив, принудительно завершаем
+                try:
+                    os.kill(int(old_pid), 0)
+                    os.kill(int(old_pid), signal.SIGKILL)
+                    time.sleep(2)
+                except:
+                    pass
+                    
+                # Удаляем старый lock-файл
+                os.remove(lock_file)
+                
             except (ProcessLookupError, ValueError):
-                logger.info("🔄 Старый процесс не найден, продолжаем запуск")
+                logger.info("🔄 Старый процесс не найден, удаляем lock-файл")
                 os.remove(lock_file)
         
+        # Создаем новый lock-файл
         with open(lock_file, 'w') as f:
             f.write(str(os.getpid()))
         
@@ -76,6 +131,7 @@ def check_single_instance():
     except Exception as e:
         logger.warning(f"⚠️ Ошибка при проверке блокировки: {e}")
 
+# Проверяем единственный экземпляр перед всем остальным
 check_single_instance()
 
 # ===== УЛУЧШЕННЫЙ HEALTH CHECK SERVER =====
@@ -366,7 +422,7 @@ class ImprovedNewsSearcher:
             return query
 
     async def search_yandex_regular(self, query):
-        """ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ поиск через обычный Яндекс (вместо Яндекс.Новостей)"""
+        """Поиск через обычный Яндекс (вместо Яндекс.Новостей)"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
@@ -1019,7 +1075,7 @@ class RobustBot:
 ⚡ <b>Свежие новости</b> - поиск актуальных статей за сегодня
 📊 <b>Быстрый поиск</b> - российские и международные источники
 
-<b>💡 Примеры успешных запросы:</b>
+<b>💡 Примеры успешных запросов:</b>
 
 <b>Короткие запросы:</b>
 • ЭПР
