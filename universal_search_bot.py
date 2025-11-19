@@ -470,13 +470,13 @@ class ImprovedNewsSearcher:
             return query
 
     async def search_yandex_regular(self, query):
-        """Поиск через обычный Яндекс (вместо Яндекс.Новостей)"""
+        """Поиск через обычный Яндекс с фильтрацией новостных сайтов"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
             
-            # Используем обычный поиск Яндекс с фильтром по дате (последний месяц)
-            url = f"https://yandex.ru/search/?text={encoded_query}&lr=213&numdoc=50&within=30"
+            # Используем обычный поиск Яндекс
+            url = f"https://yandex.ru/search/?text={encoded_query}&lr=213&numdoc=50"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -494,7 +494,7 @@ class ImprovedNewsSearcher:
                     articles = []
                     
                     # Ищем все органические результаты поиска
-                    search_results = soup.find_all('li', class_='serp-item')  # Основные результаты
+                    search_results = soup.find_all('li', class_='serp-item')
                     
                     # Альтернативные селекторы для результатов
                     if not search_results:
@@ -526,14 +526,17 @@ class ImprovedNewsSearcher:
                             elif link.startswith('//'):
                                 link = f"https:{link}"
                             
-                            # Пропускаем ссылки на сам Яндекс
-                            if 'yandex.ru' in link and not any(domain in link for domain in ['news.yandex', 'zen.yandex']):
+                            # Пропускаем ссылки на сам Яндекс и другие поисковые системы
+                            if any(domain in link for domain in ['yandex.ru', 'google.com', 'bing.com']):
                                 continue
                             
-                            # Проверяем, что это российский домен и конкретная статья
+                            # Ключевые слова в URL, указывающие на новостные источники
+                            news_keywords = ['press', 'news', 'novosti', 'article', 'stati', 'zhurnal', 'doc', 'documents']
+                            
+                            # Проверяем, что это российский домен И содержит признаки новостного источника
                             if (link and link.startswith('http') and 
-                                self.is_russian_domain(link) and 
-                                self.is_specific_article_url(link)):
+                                self.is_russian_domain(link) and
+                                any(keyword in link.lower() for keyword in news_keywords)):
                                 
                                 # Проверяем релевантность по заголовку
                                 title_lower = title.lower()
@@ -546,16 +549,9 @@ class ImprovedNewsSearcher:
                                 # Считаем релевантность (чем больше общих слов, тем лучше)
                                 relevance_score = len(common_words)
                                 
-                                # Дополнительные баллы за приоритетные домены и ключевые слова
+                                # Дополнительные баллы за приоритетные домены
                                 if self.is_priority_domain(link):
                                     relevance_score += 3
-                                
-                                keywords = ['эпр', 'экспериментальный', 'правовой', 'режим', 
-                                          'регуляторная', 'песочница', 'финтех', 'банк', 'россии',
-                                          'цифровые', 'финансовые', 'активы', 'цб', 'блокчейн']
-                                for keyword in keywords:
-                                    if keyword in title_lower:
-                                        relevance_score += 1
                                 
                                 # Минимальный порог релевантности
                                 if relevance_score >= 1:
@@ -582,8 +578,8 @@ class ImprovedNewsSearcher:
                             seen_urls.add(article['url'])
                             unique_articles.append(article)
                     
-                    logger.info(f"✅ Яндекс поиск: найдено {len(unique_articles)} релевантных статей")
-                    return unique_articles[:15]  # Возвращаем топ-15
+                    logger.info(f"✅ Яндекс поиск с фильтром новостей: найдено {len(unique_articles)} статей")
+                    return unique_articles[:10]  # Возвращаем топ-10
                     
             return []
         except asyncio.TimeoutError:
@@ -799,63 +795,59 @@ class ImprovedNewsSearcher:
             return []
 
     async def search_only_russian(self, query):
-        """УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских источниках - теперь использует обычный Яндекс"""
+        """УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских новостных источниках"""
         cache_key = f"russian_only_{hash(query)}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
-            logger.info("✅ Используем кэшированные результаты (только российские)")
+            logger.info("✅ Используем кэшированные результаты (только российские новости)")
             return cached_results
 
-        logger.info(f"🔍 УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских источниках: {query}")
-
-        all_results = []
+        logger.info(f"🔍 УЛУЧШЕННЫЙ поиск ТОЛЬКО в российских новостных источниках: {query}")
 
         try:
-            # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем обычный Яндекс вместо Яндекс.Новостей
+            # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем улучшенный Яндекс поиск с фильтрацией новостей
             yandex_results = await self.search_yandex_regular(query)
-            all_results.extend(yandex_results)
-            logger.info(f"✅ Яндекс поиск: {len(yandex_results)} статей")
+            logger.info(f"✅ Яндекс поиск (новости): {len(yandex_results)} статей")
 
-            # Дополнительно используем Bing для российских источников
-            bing_ru_results = await self.search_bing_news_improved(query, 'ru-RU')
-            all_results.extend(bing_ru_results)
-            logger.info(f"✅ Bing Россия: {len(bing_ru_results)} статей")
+            # УПРОЩЕННАЯ фильтрация - принимаем только новостные статьи
+            filtered_results = []
+            seen_urls = set()
+            
+            for result in yandex_results:
+                if result and result.get('url'):
+                    url = result['url'].lower()
+                    
+                    # Проверяем, что URL содержит признаки новостного источника
+                    news_keywords = ['press', 'news', 'novosti', 'article', 'stati', 'zhurnal', 'doc', 'documents']
+                    is_news_url = any(keyword in url for keyword in news_keywords)
+                    
+                    if (url.startswith('http') and 
+                        url not in seen_urls and 
+                        is_news_url):
+                        
+                        seen_urls.add(url)
+                        filtered_results.append(result)
 
+            # Сортируем: сначала приоритетные, потом по релевантности
+            priority_articles = [r for r in filtered_results if r.get('priority') or self.is_priority_domain(r['url'])]
+            regular_articles = [r for r in filtered_results if not (r.get('priority') or self.is_priority_domain(r['url']))]
+            
+            # Сортируем регулярные статьи по релевантности
+            regular_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            
+            # Объединяем с приоритетом официальных источников
+            final_results = priority_articles + regular_articles
+            
+            # Возвращаем результаты
+            final_results = final_results[:8]
+            
+            self.set_cached_results(cache_key, final_results)
+            logger.info(f"📊 Итоговые российские новостные результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
+            return final_results
+            
         except Exception as e:
             logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
-
-        # УПРОЩЕННАЯ фильтрация - принимаем больше результатов
-        filtered_results = []
-        seen_urls = set()
-        
-        for result in all_results:
-            if result and result.get('url'):
-                url = result['url'].lower()
-                
-                # УПРОЩЕННАЯ проверка - принимаем больше статей
-                if (url.startswith('http') and 
-                    url not in seen_urls and 
-                    (self.is_specific_article_url(url) or self.is_russian_domain(url))):
-                    
-                    seen_urls.add(url)
-                    filtered_results.append(result)
-
-        # Сортируем: сначала приоритетные, потом по релевантности
-        priority_articles = [r for r in filtered_results if r.get('priority') or self.is_priority_domain(r['url'])]
-        regular_articles = [r for r in filtered_results if not (r.get('priority') or self.is_priority_domain(r['url']))]
-        
-        # Сортируем регулярные статьи по релевантности
-        regular_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-        
-        # Объединяем с приоритетом официальных источников
-        final_results = priority_articles + regular_articles
-        
-        # Возвращаем больше результатов
-        final_results = final_results[:15]
-        
-        self.set_cached_results(cache_key, final_results)
-        logger.info(f"📊 Итоговые российские результаты: {len(final_results)} статей (приоритетных: {len(priority_articles)})")
-        return final_results
+            return []
 
     async def search_international_only(self, query):
         """Поиск ТОЛЬКО в международных источниках"""
@@ -923,7 +915,7 @@ class ImprovedNewsSearcher:
             if search_type in ["all", "russian"]:
                 logger.info(f"🔍 Поиск в российских источниках: {query}")
 
-                # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем обычный Яндекс
+                # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем улучшенный Яндекс поиск
                 yandex_results = await self.search_yandex_regular(query)
                 all_results.extend(yandex_results)
                 logger.info(f"✅ Яндекс поиск: {len(yandex_results)} статей")
@@ -986,7 +978,7 @@ class ImprovedNewsSearcher:
             try:
                 logger.info(f"📢 Поиск свежих новостей: {query}")
 
-                # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем обычный Яндекс
+                # ОСНОВНОЕ ИЗМЕНЕНИЕ: используем улучшенный Яндекс поиск
                 yandex_results = await self.search_yandex_regular(query)
                 bing_results = await self.search_bing_news_improved(query, 'ru-RU')
 
