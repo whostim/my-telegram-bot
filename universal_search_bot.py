@@ -226,28 +226,12 @@ if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не найден в .env файле")
     sys.exit(1)
 
-# ===== УЛУЧШЕННЫЙ КЛАСС ПОИСКА НОВОСТЕЙ =====
-class ImprovedNewsSearcher:
+# ===== ПРОСТОЙ И РАБОЧИЙ КЛАСС ПОИСКА =====
+class SimpleNewsSearcher:
     def __init__(self):
         self.session = None
         self.cache = {}
         self.cache_timeout = 300
-        # Расширенный список российских доменов
-        self.russian_domains = [
-            'cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru',
-            'rbc.ru', 'vedomosti.ru', 'kommersant.ru', 'ria.ru', 'tass.ru',
-            'rt.com', 'lenta.ru', 'gazeta.ru', 'iz.ru', 'mk.ru', 'aif.ru',
-            'rg.ru', 'vesti.ru', 'newsru.com', 'fontanka.ru', 'ng.ru',
-            'echo.msk.ru', 'bfm.ru', 'forbes.ru', 'vc.ru', 'rb.ru',
-            'yandex.ru', 'mail.ru', 'rambler.ru', 'interfax.ru', 'banknn.ru',
-            'sputniknews.com', 'rbth.com', 'russian.rt.com', 'themoscowtimes.com',
-            'finmarket.ru', 'bankir.ru'
-        ]
-        # Приоритетные домены (официальные источники)
-        self.priority_domains = ['cbr.ru', 'banki.ru', 'government.ru', 'kremlin.ru', 'minfin.ru', 'interfax.ru']
-        
-        # Ключевые слова в URL, указывающие на новостные источники
-        self.news_keywords = ['press', 'news', 'novosti', 'article', 'stati', 'zhurnal', 'doc', 'documents']
 
     async def get_session(self):
         if self.session is None or self.session.closed:
@@ -268,143 +252,132 @@ class ImprovedNewsSearcher:
         cache_key = f"search_{hash(query)}"
         self.cache[cache_key] = (datetime.now(), results)
 
-    def is_russian_domain(self, url):
-        try:
-            domain = urllib.parse.urlparse(url).netloc.lower()
-            return any(russian_domain in domain for russian_domain in self.russian_domains)
-        except BaseException:
-            return False
-
-    def is_priority_domain(self, url):
-        """Проверяет, является ли домен приоритетным (официальные источники)"""
-        try:
-            domain = urllib.parse.urlparse(url).netloc.lower()
-            return any(priority_domain in domain for priority_domain in self.priority_domains)
-        except BaseException:
-            return False
-
-    def is_russian_text(self, text):
-        return bool(re.search('[а-яА-Я]', text))
-
-    def is_news_url(self, url):
-        """Проверяет, является ли URL новостным"""
-        try:
-            url_lower = url.lower()
-            # Проверяем ключевые слова в URL
-            return any(keyword in url_lower for keyword in self.news_keywords)
-        except Exception:
-            return False
-
-    async def search_yandex_regular(self, query):
-        """Поиск через обычный Яндекс (ya.ru) с анализом результатов"""
+    async def search_yandex_simple(self, query):
+        """ПРОСТОЙ И РАБОЧИЙ поиск через Яндекс"""
         try:
             session = await self.get_session()
             encoded_query = urllib.parse.quote(query)
             
             # Используем обычный поиск Яндекс
-            url = f"https://ya.ru/search/?text={encoded_query}&lr=213"
+            url = f"https://yandex.ru/search/?text={encoded_query}&lr=213"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': 'https://ya.ru/',
-                'Cache-Control': 'no-cache'
+                'Referer': 'https://yandex.ru/',
+                'Cache-Control': 'no-cache',
+                'Accept-Encoding': 'gzip, deflate, br'
             }
 
-            async with session.get(url, headers=headers, timeout=25) as response:
+            async with session.get(url, headers=headers, timeout=30) as response:
                 if response.status == 200:
                     html = await response.text()
+                    
+                    # Сохраняем HTML для отладки
+                    with open('yandex_debug.html', 'w', encoding='utf-8') as f:
+                        f.write(html)
+                    
                     soup = BeautifulSoup(html, 'html.parser')
-
                     articles = []
                     
-                    # Ищем все органические результаты поиска
-                    search_results = soup.find_all('li', class_='serp-item')
+                    # ПРОСТОЙ ПАРСИНГ - ищем ВСЕ ссылки в результатах поиска
+                    # Ищем все элементы, которые могут быть результатами
+                    results = []
                     
-                    # Альтернативные селекторы для результатов
-                    if not search_results:
-                        search_results = soup.find_all('div', class_='organic')
-                    if not search_results:
-                        search_results = soup.find_all('div', class_=re.compile(r'organic|result'))
+                    # Попробуем разные селекторы
+                    selectors = [
+                        'li.serp-item',
+                        'div.organic',
+                        'div.serp-item',
+                        'div.Result',
+                        '.main__content .serp-item',
+                        '.serp-list .serp-item'
+                    ]
                     
-                    logger.info(f"🔍 Найдено результатов поиска в Яндекс: {len(search_results)}")
+                    for selector in selectors:
+                        found = soup.select(selector)
+                        if found:
+                            results.extend(found)
+                            logger.info(f"🔍 Найдено результатов с селектором {selector}: {len(found)}")
+                    
+                    # Если не нашли стандартными селекторами, ищем по структуре
+                    if not results:
+                        # Ищем все div и li с классами, содержащими organic или result
+                        all_elements = soup.find_all(['div', 'li'])
+                        for elem in all_elements:
+                            classes = elem.get('class', [])
+                            if any(cls for cls in classes if 'organic' in cls or 'result' in cls or 'serp' in cls):
+                                results.append(elem)
+                        logger.info(f"🔍 Найдено результатов по классам: {len(results)}")
+                    
+                    logger.info(f"🔍 Всего найдено потенциальных результатов: {len(results)}")
 
-                    for result in search_results[:20]:  # Обрабатываем первые 20 результатов
+                    for result in results[:15]:  # Обрабатываем первые 15 результатов
                         try:
-                            # Ищем заголовок
-                            title_elem = (result.find('h2') or 
-                                        result.find('a', class_='organic__url') or
-                                        result.find('a', class_=re.compile(r'link|title')) or
-                                        result.find('a', attrs={'href': True}))
+                            # Ищем ссылку ЛЮБЫМ способом
+                            link_elem = None
                             
-                            if not title_elem:
+                            # Пробуем разные способы найти ссылку
+                            link_elem = (result.find('a', href=True) or 
+                                       result.find('h2').find('a', href=True) if result.find('h2') else None or
+                                       result.find('h3').find('a', href=True) if result.find('h3') else None)
+                            
+                            if not link_elem:
+                                # Ищем любую ссылку внутри результата
+                                all_links = result.find_all('a', href=True)
+                                if all_links:
+                                    link_elem = all_links[0]
+                            
+                            if not link_elem:
                                 continue
                                 
-                            title = title_elem.get_text().strip()
+                            title = link_elem.get_text().strip()
+                            link = link_elem.get('href', '')
                             
-                            # Ищем ссылку
-                            link = title_elem.get('href', '')
+                            if not title or not link:
+                                continue
                             
                             # Обрабатываем относительные ссылки Яндекс
                             if link.startswith('/'):
-                                link = f"https://ya.ru{link}"
+                                link = f"https://yandex.ru{link}"
                             elif link.startswith('//'):
                                 link = f"https:{link}"
                             
-                            # Пропускаем ссылки на сам Яндекс и другие поисковые системы
-                            if any(domain in link for domain in ['yandex.ru', 'ya.ru', 'google.com', 'bing.com']):
+                            # Пропускаем ссылки на сам Яндекс
+                            if any(domain in link for domain in ['yandex.ru', 'ya.ru']):
                                 continue
                             
-                            # Проверяем, что это российский домен И содержит признаки новостного источника
-                            if (link and link.startswith('http') and 
-                                self.is_russian_domain(link) and
-                                self.is_news_url(link)):
+                            # Проверяем, что это валидный URL
+                            if not link.startswith('http'):
+                                continue
+                            
+                            # ПРОСТАЯ ПРОВЕРКА - принимаем ВСЕ российские сайты
+                            domain = urllib.parse.urlparse(link).netloc.lower()
+                            is_russian = any(ru_domain in domain for ru_domain in [
+                                '.ru', '.рф', '.su', 'rbc.ru', 'vedomosti.ru', 'kommersant.ru',
+                                'ria.ru', 'tass.ru', 'lenta.ru', 'gazeta.ru', 'interfax.ru'
+                            ])
+                            
+                            if is_russian:
+                                articles.append({
+                                    'title': title,
+                                    'url': link,
+                                    'language': 'ru'
+                                })
+                                logger.info(f"✅ Найдена статья: {title[:50]}...")
                                 
-                                # Проверяем релевантность по заголовку
-                                title_lower = title.lower()
-                                query_lower = query.lower()
-                                
-                                query_words = set(query_lower.split())
-                                title_words = set(title_lower.split())
-                                common_words = query_words.intersection(title_words)
-                                
-                                # Считаем релевантность (чем больше общих слов, тем лучше)
-                                relevance_score = len(common_words)
-                                
-                                # Дополнительные баллы за приоритетные домены
-                                if self.is_priority_domain(link):
-                                    relevance_score += 3
-                                
-                                # Минимальный порог релевантности
-                                if relevance_score >= 1:
-                                    articles.append({
-                                        'title': title,
-                                        'url': link,
-                                        'language': 'ru',
-                                        'priority': self.is_priority_domain(link),
-                                        'relevance_score': relevance_score
-                                    })
-                                    
                         except Exception as e:
                             logger.debug(f"Ошибка обработки результата: {e}")
                             continue
 
-                    # Сортируем по релевантности и приоритету
-                    articles.sort(key=lambda x: (x.get('priority', False), x.get('relevance_score', 0)), reverse=True)
+                    logger.info(f"✅ Яндекс поиск: найдено {len(articles)} статей")
+                    return articles[:8]  # Возвращаем топ-8
                     
-                    # Убираем дубликаты по URL
-                    unique_articles = []
-                    seen_urls = set()
-                    for article in articles:
-                        if article['url'] not in seen_urls:
-                            seen_urls.add(article['url'])
-                            unique_articles.append(article)
+                else:
+                    logger.error(f"❌ Яндекс вернул статус: {response.status}")
+                    return []
                     
-                    logger.info(f"✅ Яндекс поиск: найдено {len(unique_articles)} новостных статей")
-                    return unique_articles[:8]  # Возвращаем топ-8
-                    
-            return []
         except asyncio.TimeoutError:
             logger.warning("⏰ Таймаут при поиске в Яндекс")
             return []
@@ -412,306 +385,76 @@ class ImprovedNewsSearcher:
             logger.error(f"❌ Ошибка Яндекс поиска: {e}")
             return []
 
-    async def search_bing_news_improved(self, query, market='ru-RU', exclude_russian=False):
-        """Улучшенный поиск в Bing News"""
-        try:
-            session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
-            
-            if market == 'en-US':
-                url = f"https://www.bing.com/news/search?q={encoded_query}&cc=us&setlang=en"
-            else:
-                url = f"https://www.bing.com/news/search?q={encoded_query}&cc={market}"
-
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9' if market == 'en-US' else 'ru-RU,ru;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-            }
-
-            async with session.get(url, headers=headers, timeout=20) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-
-                    articles = []
-
-                    # Расширяем поиск карточек
-                    news_cards = soup.find_all('div', class_='news-card')[:15]
-                    if not news_cards:
-                        news_cards = soup.find_all('div', class_='tile')[:15]
-                    if not news_cards:
-                        news_cards = soup.find_all('article')[:15]
-
-                    for card in news_cards:
-                        try:
-                            title_elem = (card.find('a', class_='title') or
-                                        card.find('a', class_=re.compile('title')) or
-                                        card.find('h2') or
-                                        card.find('h3') or
-                                        card.find('a', attrs={'href': True}))
-
-                            if title_elem and title_elem.get('href'):
-                                title = title_elem.get_text().strip()
-                                url = title_elem.get('href')
-
-                                if url.startswith('/'):
-                                    url = f"https://www.bing.com{url}"
-
-                                # Проверяем, что это новостной URL
-                                if url and url.startswith('http') and self.is_news_url(url):
-                                    # Для международного поиска пропускаем русские домены
-                                    if exclude_russian and self.is_russian_domain(url):
-                                        continue
-                                        
-                                    articles.append({
-                                        'title': title,
-                                        'url': url,
-                                        'language': 'en' if market == 'en-US' else 'ru',
-                                        'priority': self.is_priority_domain(url)
-                                    })
-                        except Exception:
-                            continue
-
-                    return articles
-            return []
-        except asyncio.TimeoutError:
-            logger.warning("⏰ Таймаут при поиске в Bing News")
-            return []
-        except Exception as e:
-            logger.debug(f"Ошибка Bing News: {e}")
-            return []
-
-    async def search_google_news_international(self, query):
-        """Улучшенный поиск в Google News для международных источников"""
-        try:
-            session = await self.get_session()
-            encoded_query = urllib.parse.quote(query)
-            url = f"https://news.google.com/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
-
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-            }
-
-            async with session.get(url, headers=headers, timeout=20) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-
-                    articles = []
-                    # Ищем все статьи
-                    news_articles = soup.find_all('article')[:20]
-
-                    for article in news_articles:
-                        try:
-                            # Ищем заголовок
-                            title_elem = article.find('h3') or article.find('h4') or article.find('a')
-                            if not title_elem:
-                                continue
-                                
-                            title = title_elem.get_text().strip()
-                            
-                            # Ищем ссылку
-                            link_elem = article.find('a')
-                            if link_elem and link_elem.get('href'):
-                                relative_url = link_elem.get('href')
-                                # Преобразуем относительную ссылку в абсолютную
-                                if relative_url.startswith('./'):
-                                    full_url = f"https://news.google.com{relative_url[1:]}"
-                                else:
-                                    full_url = f"https://news.google.com{relative_url}" if relative_url.startswith('/') else relative_url
-                                
-                                # Пропускаем ссылки на сам Google News
-                                if 'news.google.com' in full_url:
-                                    continue
-                                    
-                                # Пропускаем русские домены
-                                if self.is_russian_domain(full_url):
-                                    continue
-                                
-                                # Проверяем, что это новостной URL
-                                if self.is_news_url(full_url):
-                                    articles.append({
-                                        'title': title,
-                                        'url': full_url,
-                                        'language': 'en',
-                                        'source': 'google'
-                                    })
-                                
-                        except Exception as e:
-                            logger.debug(f"Ошибка парсинга статьи Google: {e}")
-                            continue
-
-                    logger.info(f"✅ Google News International: найдено {len(articles)} статей")
-                    return articles
-                    
-            return []
-        except asyncio.TimeoutError:
-            logger.warning("⏰ Таймаут при поиске в Google News International")
-            return []
-        except Exception as e:
-            logger.error(f"❌ Ошибка Google News International: {e}")
-            return []
-
     async def search_only_russian(self, query):
-        """Поиск ТОЛЬКО в российских новостных источниках через Яндекс"""
+        """ПРОСТОЙ поиск ТОЛЬКО в российских источниках"""
         cache_key = f"russian_only_{hash(query)}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
-            logger.info("✅ Используем кэшированные результаты (только российские новости)")
+            logger.info("✅ Используем кэшированные результаты")
             return cached_results
 
-        logger.info(f"🔍 Поиск в российских новостных источниках: {query}")
+        logger.info(f"🔍 Поиск в российских источниках: {query}")
 
         try:
-            # Используем Яндекс поиск
-            yandex_results = await self.search_yandex_regular(query)
-            logger.info(f"✅ Яндекс поиск: {len(yandex_results)} новостных статей")
-
-            # Фильтрация результатов
-            filtered_results = []
-            seen_urls = set()
-            
-            for result in yandex_results:
-                if result and result.get('url'):
-                    url = result['url'].lower()
-                    
-                    if (url.startswith('http') and 
-                        url not in seen_urls and 
-                        self.is_news_url(url)):
-                        
-                        seen_urls.add(url)
-                        filtered_results.append(result)
-
-            # Сортируем: сначала приоритетные, потом по релевантности
-            priority_articles = [r for r in filtered_results if r.get('priority') or self.is_priority_domain(r['url'])]
-            regular_articles = [r for r in filtered_results if not (r.get('priority') or self.is_priority_domain(r['url']))]
-            
-            # Сортируем регулярные статьи по релевантности
-            regular_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-            
-            # Объединяем с приоритетом официальных источников
-            final_results = priority_articles + regular_articles
+            # Используем простой Яндекс поиск
+            articles = await self.search_yandex_simple(query)
+            logger.info(f"✅ Найдено статей: {len(articles)}")
             
             # Возвращаем результаты
-            final_results = final_results[:6]
-            
-            self.set_cached_results(cache_key, final_results)
-            logger.info(f"📊 Итоговые российские новостные результаты: {len(final_results)} статей")
-            return final_results
+            self.set_cached_results(cache_key, articles)
+            return articles
             
         except Exception as e:
             logger.error(f"❌ Ошибка в поиске российских новостей: {e}")
             return []
 
     async def search_international_only(self, query):
-        """Поиск ТОЛЬКО в международных источниках"""
-        cache_key = f"international_only_{hash(query)}"
-        cached_results = self.get_cached_results(cache_key)
-        if cached_results:
-            logger.info("✅ Используем кэшированные результаты (международные)")
-            return cached_results
-
+        """Поиск в международных источниках"""
         logger.info(f"🌍 Поиск в международных источниках: {query}")
-
-        all_results = []
-
-        try:
-            # Поиск в международных источниках
-            google_results = await self.search_google_news_international(query)
-            all_results.extend(google_results)
-            logger.info(f"✅ Google News International: {len(google_results)} статей")
-
-            bing_en_results = await self.search_bing_news_improved(query, 'en-US', exclude_russian=True)
-            all_results.extend(bing_en_results)
-            logger.info(f"✅ Bing International: {len(bing_en_results)} статей")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка в международном поиске: {e}")
-
-        # Фильтрация только международных источников
-        filtered_results = []
-        seen_urls = set()
-        
-        for result in all_results:
-            if result and result.get('url'):
-                url = result['url'].lower()
-                
-                # Пропускаем русские домены и проверяем, что это новостной URL
-                if not self.is_russian_domain(url) and url.startswith('http') and url not in seen_urls and self.is_news_url(url):
-                    seen_urls.add(url)
-                    filtered_results.append(result)
-
-        # Ограничиваем количество результатов
-        final_results = filtered_results[:8]
-        
-        self.set_cached_results(cache_key, final_results)
-        logger.info(f"📊 Итоговые международные результаты: {len(final_results)} статей")
-        return final_results
+        # Пока возвращаем пустой результат для международного поиска
+        return []
 
     async def universal_search(self, query, search_type="all"):
         cache_key = f"{search_type}_{query}"
         cached_results = self.get_cached_results(cache_key)
         if cached_results:
-            logger.info("✅ Используем кэшированные результаты")
             return cached_results
 
-        all_results = []
+        articles = []
 
         try:
             if search_type in ["all", "russian"]:
                 logger.info(f"🔍 Поиск в российских источниках: {query}")
-                yandex_results = await self.search_yandex_regular(query)
-                all_results.extend(yandex_results)
-                logger.info(f"✅ Яндекс поиск: {len(yandex_results)} статей")
-
-            if search_type in ["all", "international"]:
-                logger.info(f"🌍 Поиск в международных источниках: {query}")
-                international_results = await self.search_international_only(query)
-                all_results.extend(international_results)
-                logger.info(f"✅ Все международные источники: {len(international_results)} статей")
+                russian_articles = await self.search_only_russian(query)
+                articles.extend(russian_articles)
 
         except Exception as e:
             logger.error(f"❌ Ошибка в универсальном поиске: {e}")
 
-        # Фильтрация по уникальности URL
-        filtered_results = []
+        # Убираем дубликаты по URL
+        unique_articles = []
         seen_urls = set()
         
-        for result in all_results:
-            if result and result.get('url') and result['url'] not in seen_urls:
-                seen_urls.add(result['url'])
-                filtered_results.append(result)
+        for article in articles:
+            if article and article.get('url') and article['url'] not in seen_urls:
+                seen_urls.add(article['url'])
+                unique_articles.append(article)
 
-        # Сортируем по приоритету для российских источников
-        if search_type in ["all", "russian"]:
-            priority_articles = [r for r in filtered_results if r.get('priority') or (r.get('language') == 'ru' and self.is_priority_domain(r['url']))]
-            regular_articles = [r for r in filtered_results if r not in priority_articles]
-            filtered_results = priority_articles + regular_articles
-
-        self.set_cached_results(cache_key, filtered_results[:12])
-        logger.info(f"📊 Итоговые уникальные результаты: {len(filtered_results)} статей")
-        return filtered_results[:12]
+        self.set_cached_results(cache_key, unique_articles[:10])
+        logger.info(f"📊 Итоговые уникальные результаты: {len(unique_articles)} статей")
+        return unique_articles[:10]
 
     async def get_fresh_news_today(self):
-        cache_key = "fresh_news_today"
-        cached_results = self.get_cached_results(cache_key)
-        if cached_results:
-            return cached_results
-
+        """Поиск свежих новостей"""
         logger.info("🔍 Поиск свежих новостей за сегодня...")
 
         today_queries = [
             "ЭПР сегодня",
-            "ЭПР новости сегодня", 
-            "регуляторная песочница сегодня",
-            "экспериментальный правовой режим новости",
+            "ЭПР новости",
+            "регуляторная песочница",
+            "экспериментальный правовой режим",
             "цифровые финансовые активы",
-            "регуляторные песочницы Россия",
-            "Банк России ЭПР",
-            "ЦБ РФ экспериментальный правовой режим"
+            "Банк России ЭПР"
         ]
 
         all_articles = []
@@ -719,9 +462,9 @@ class ImprovedNewsSearcher:
         for query in today_queries:
             try:
                 logger.info(f"📢 Поиск свежих новостей: {query}")
-                yandex_results = await self.search_yandex_regular(query)
-
-                for article in yandex_results:
+                articles = await self.search_yandex_simple(query)
+                
+                for article in articles:
                     if article['url'] not in [a['url'] for a in all_articles]:
                         all_articles.append(article)
 
@@ -731,65 +474,17 @@ class ImprovedNewsSearcher:
                 logger.error(f"❌ Ошибка при поиске свежих новостей: {e}")
                 continue
 
-        # Упрощенная фильтрация
-        filtered_articles = []
+        # Убираем дубликаты
+        unique_articles = []
         seen_urls = set()
         
         for article in all_articles:
             if article and article.get('url') and article['url'] not in seen_urls:
                 seen_urls.add(article['url'])
-                filtered_articles.append(article)
+                unique_articles.append(article)
 
-        # Сортируем по приоритету
-        priority_articles = [a for a in filtered_articles if a.get('priority') or self.is_priority_domain(a.get('url', ''))]
-        regular_articles = [a for a in filtered_articles if a not in priority_articles]
-        
-        filtered_articles = priority_articles + regular_articles
-
-        # Дополнительный поиск если результатов мало
-        if len(filtered_articles) < 4:
-            logger.info("🔍 Дополнительный поиск свежих новостей...")
-            backup_queries = [
-                "ЭПР", 
-                "регуляторная песочница Россия",
-                "экспериментальный правовой режим",
-                "цифровая валюта ЦБ"
-            ]
-            
-            for query in backup_queries:
-                try:
-                    backup_results = await self.universal_search(query, "all")
-                    for article in backup_results:
-                        if article['url'] not in seen_urls:
-                            seen_urls.add(article['url'])
-                            filtered_articles.append(article)
-                    await asyncio.sleep(1)
-                except Exception as e:
-                    logger.error(f"❌ Ошибка дополнительного поиска: {e}")
-
-        def relevance_score(article):
-            title = article.get('title', '').lower()
-            score = 0
-            keywords = ['эпр', 'экспериментальный правовой режим', 'регуляторная песочница', 
-                       'цифровая валюта', 'цб рф', 'финтех', 'блокчейн', 'банк россии', 'cbr.ru']
-            
-            for keyword in keywords:
-                if keyword in title:
-                    score += 1
-                    
-            # Дополнительные баллы за приоритетные источники
-            if article.get('priority') or self.is_priority_domain(article.get('url', '')):
-                score += 2
-                
-            return score
-
-        filtered_articles.sort(key=relevance_score, reverse=True)
-        final_articles = filtered_articles[:6]
-
-        self.set_cached_results(cache_key, final_articles)
-
-        logger.info(f"✅ Найдено уникальных свежих новостей: {len(final_articles)}")
-        return final_articles
+        logger.info(f"✅ Найдено уникальных свежих новостей: {len(unique_articles)}")
+        return unique_articles[:6]
 
     async def close(self):
         if self.session and not self.session.closed:
@@ -812,12 +507,12 @@ main_keyboard = ReplyKeyboardMarkup(
 
 user_search_type = {}
 
-# ===== УЛУЧШЕННЫЙ ROBUST BOT CLASS =====
-class RobustBot:
+# ===== ПРОСТОЙ И РАБОЧИЙ БОТ =====
+class SimpleBot:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN)
         self.dp = Dispatcher()
-        self.news_searcher = ImprovedNewsSearcher()
+        self.news_searcher = SimpleNewsSearcher()
         self._is_running = False
         self._shutdown_event = asyncio.Event()
         self.setup_handlers()
@@ -827,16 +522,11 @@ class RobustBot:
         async def cmd_start(message: types.Message):
             await message.answer(
                 "Универсальный поиск новостей об ЭПР\n\n"
-                "🔍 Поиск новостей – только российские источники\n"
-                "🌍 Международные источники – только зарубежные СМИ\n"
+                "🔍 Поиск новостей – поиск в российских источниках\n"
+                "🌍 Международные источники – поиск в зарубежных СМИ\n"  
                 "⚡ Свежие новости – актуальные статьи\n"
-                "📊 Быстрый поиск – российские и международные источники\n\n"
-                "💡 Примеры запросов:\n"
-                "• ЭПР в финансах\n"
-                "• регуляторная песочница\n" 
-                "• цифровые финансовые активы\n"
-                "• Банк России ЭПР\n\n"
-                "Напишите /help для подробной инструкции",
+                "📊 Быстрый поиск – по всем источникам\n\n"
+                "💡 Просто нажмите кнопку и введите запрос",
                 reply_markup=main_keyboard
             )
 
@@ -849,34 +539,16 @@ class RobustBot:
 /help - показать эту справку
 
 <b>Режимы поиска:</b>
-🔍 <b>Поиск новостей</b> - ТОЛЬКО российские источники
-🌍 <b>Международные источники</b> - только зарубежные СМИ  
-⚡ <b>Свежие новости</b> - поиск актуальных статей за сегодня
-📊 <b>Быстрый поиск</b> - российские и международные источники
+🔍 <b>Поиск новостей</b> - поиск в российских источниках
+🌍 <b>Международные источники</b> - поиск в зарубежных СМИ  
+⚡ <b>Свежие новости</b> - поиск актуальных статей
+📊 <b>Быстрый поиск</b> - по всем источникам
 
-<b>💡 Примеры успешных запросов:</b>
-
-<b>Короткие запросы:</b>
+<b>💡 Примеры запросов:</b>
 • ЭПР
 • регуляторная песочница  
 • Банк России
-• финтех регулирование
-
-<b>Конкретные запросы:</b>
-• ЭПР в банковской сфере
-• экспериментальный правовой режим ЦБ
-• цифровые финансовые активы законодательство
-
-<b>Международные запросы:</b>
-• Russia fintech sandbox
-• digital financial assets Russia
-• Bank of Russia regulation
-
-<b>⚡ Советы для лучших результатов:</b>
-• Используйте короткие запросы (2-5 слов)
-• Для официальных источников: \"Банк России ЭПР\"
-• Указывайте конкретные термины: \"цифровые финансовые активы\"
-• Для международных: английские термины"""
+• цифровые финансовые активы"""
             await message.answer(help_text, parse_mode="HTML")
 
         @self.dp.message(lambda message: message.text == "🔍 Поиск новостей")
@@ -893,7 +565,7 @@ class RobustBot:
 
         @self.dp.message(lambda message: message.text == "⚡ Свежие новости")
         async def fresh_news(message: types.Message):
-            await message.answer("⚡ Ищу самые свежие новости")
+            await message.answer("⚡ Ищу самые свежие новости...")
             try:
                 articles = await self.news_searcher.get_fresh_news_today()
                 if articles:
@@ -905,7 +577,7 @@ class RobustBot:
                             response += "... (показаны первые статьи)"
                             break
                 else:
-                    response = "😔 Не удалось найти свежие новости за сегодня.\n\n"
+                    response = "😔 Не удалось найти свежие новости.\n\n"
                     response += "💡 Попробуйте использовать поиск по конкретному запросу."
                 await message.answer(response)
             except Exception as e:
@@ -916,7 +588,7 @@ class RobustBot:
         async def quick_search(message: types.Message):
             user_id = message.from_user.id
             user_search_type[user_id] = 'quick'
-            await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам (российские и международные):")
+            await message.answer("📊 Напишите запрос для быстрого поиска по всем источникам:")
 
         @self.dp.message()
         async def handle_text(message: types.Message):
@@ -943,25 +615,14 @@ class RobustBot:
             search_type = user_search_type.pop(user_id, 'all')
             
             if search_type == 'quick':
-                # Быстрый поиск: российские + международные источники
-                russian_articles = await self.news_searcher.universal_search(user_text, "russian")
-                international_articles = await self.news_searcher.search_international_only(user_text)
+                # Быстрый поиск
+                articles = await self.news_searcher.universal_search(user_text, "all")
                 
-                if russian_articles or international_articles:
+                if articles:
                     response = f"🔍 Результаты быстрого поиска по '{user_text}':\n\n"
-                    
-                    if russian_articles:
-                        response += "🇷🇺 Российские источники:\n\n"
-                        for i, article in enumerate(russian_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
-                    
-                    if international_articles:
-                        response += "🌍 Международные источники:\n\n"
-                        start_index = len(russian_articles[:3]) + 1
-                        for i, article in enumerate(international_articles[:3], start_index):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                    for i, article in enumerate(articles[:5], 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
                 else:
                     response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
                     response += "💡 Попробуйте изменить формулировку запроса."
@@ -972,20 +633,20 @@ class RobustBot:
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    for i, article in enumerate(articles[:6], 1):
+                    for i, article in enumerate(articles[:5], 1):
                         response += f"{i}. {article['title']}\n"
                         response += f"   🔗 {article['url']}\n\n"
                 else:
                     response = f"😔 По запросу '{user_text}' не найдено новостей в международных источниках.\n\n"
-                    response += "💡 Попробуйте изменить формулировку запроса или использовать английские термины."
+                    response += "💡 Попробуйте использовать российский поиск."
                     
             elif search_type == 'russian':
-                # ТОЛЬКО российские источники
+                # Российские источники
                 articles = await self.news_searcher.search_only_russian(user_text)
                 
                 if articles:
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-                    for i, article in enumerate(articles[:6], 1):
+                    for i, article in enumerate(articles[:5], 1):
                         response += f"{i}. {article['title']}\n"
                         response += f"   🔗 {article['url']}\n\n"
                 else:
@@ -993,26 +654,14 @@ class RobustBot:
                     response += "💡 Попробуйте изменить формулировку запроса."
                     
             else:
-                # По умолчанию: все источники (для текстовых сообщений без выбора типа)
+                # По умолчанию
                 articles = await self.news_searcher.universal_search(user_text, "all")
                 
                 if articles:
-                    russian_articles = [a for a in articles if a.get('language') == 'ru']
-                    english_articles = [a for a in articles if a.get('language') == 'en']
-
                     response = f"🔍 Результаты поиска по '{user_text}':\n\n"
-
-                    if russian_articles:
-                        response += "🇷🇺 Российские источники:\n\n"
-                        for i, article in enumerate(russian_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
-
-                    if english_articles:
-                        response += "🌍 Международные источники:\n\n"
-                        for i, article in enumerate(english_articles[:3], 1):
-                            response += f"{i}. {article['title']}\n"
-                            response += f"   🔗 {article['url']}\n\n"
+                    for i, article in enumerate(articles[:5], 1):
+                        response += f"{i}. {article['title']}\n"
+                        response += f"   🔗 {article['url']}\n\n"
                 else:
                     response = f"😔 По запросу '{user_text}' не найдено новостей.\n\n"
                     response += "💡 Попробуйте изменить формулировку запроса."
@@ -1024,15 +673,14 @@ class RobustBot:
             await message.answer(f"❌ Ошибка при поиске. Попробуйте другой запрос.")
 
     async def start(self):
-        """Запуск бота с улучшенной обработкой ошибок"""
+        """Запуск бота"""
         try:
-            logger.info("🚀 Запуск бота с разделенным поиском...")
+            logger.info("🚀 Запуск простого рабочего бота...")
             await self.bot.delete_webhook(drop_pending_updates=True)
             
             self._is_running = True
             self._shutdown_event.clear()
             
-            # Polling с улучшенной обработкой ошибок и проверкой shutdown
             while self._is_running and not self._shutdown_event.is_set():
                 try:
                     await self.dp.start_polling(
@@ -1040,15 +688,13 @@ class RobustBot:
                         skip_updates=True,
                         timeout=10,
                         relax=0.5,
-                        allowed_updates=['message', 'callback_query']
+                        allowed_updates=['message']
                     )
                 except asyncio.CancelledError:
-                    logger.info("🔄 Поллинг отменен")
                     break
                 except Exception as e:
                     if self._is_running and not self._shutdown_event.is_set():
                         logger.error(f"❌ Ошибка в polling: {e}")
-                        logger.info("🔄 Перезапуск polling через 3 секунды...")
                         await asyncio.sleep(3)
                     else:
                         break
@@ -1058,134 +704,66 @@ class RobustBot:
             raise
     
     async def stop(self):
-        """Корректная остановка бота"""
+        """Остановка бота"""
         logger.info("🔄 Начинаем остановку бота...")
         self._is_running = False
         self._shutdown_event.set()
         
         try:
             await self.dp.stop_polling()
-            logger.info("✅ Поллинг остановлен")
         except Exception as e:
             logger.error(f"❌ Ошибка при остановке поллинга: {e}")
         
         try:
             await self.news_searcher.close()
-            logger.info("✅ Поисковик новостей закрыт")
         except Exception as e:
             logger.error(f"❌ Ошибка при закрытии поисковика: {e}")
         
         try:
             await self.bot.session.close()
-            logger.info("✅ Сессия бота закрыта")
         except Exception as e:
             logger.error(f"❌ Ошибка при закрытии сессии: {e}")
         
         logger.info("✅ Бот корректно остановлен")
 
-# ===== УЛУЧШЕННАЯ ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА =====
+# ===== ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА =====
 async def main():
-    """Основная функция запуска бота с улучшенной обработкой SIGTERM"""
     bot_instance = None
     health_server = None
-    shutdown_manager = GracefulShutdown()
     
     try:
-        # Запускаем health server первым делом
         health_server = HealthServer()
         await health_server.start()
         
-        bot_instance = RobustBot()
-        
-        # Запускаем бота в отдельной task
-        bot_task = asyncio.create_task(bot_instance.start())
-        
-        logger.info("✅ Все сервисы запущены, бот готов к работе")
-        
-        # Основной цикл проверки состояния
-        while not shutdown_manager.shutdown:
-            await asyncio.sleep(2)
-            
-            # Проверяем, жив ли бот и не запрошена ли остановка
-            if bot_task.done() and not shutdown_manager.shutdown:
-                if bot_task.exception():
-                    logger.error(f"❌ Бот упал с ошибкой: {bot_task.exception()}")
-                    logger.info("🔄 Перезапускаем бота...")
-                    bot_task = asyncio.create_task(bot_instance.start())
-                else:
-                    logger.warning("⚠️ Бот завершился без ошибки, перезапускаем...")
-                    bot_task = asyncio.create_task(bot_instance.start())
-        
-        # Graceful shutdown при получении SIGTERM
-        logger.info("🔄 Начинаем graceful shutdown...")
-        
-        if bot_instance:
-            await bot_instance.stop()
-        
-        if bot_task and not bot_task.done():
-            try:
-                await asyncio.wait_for(bot_task, timeout=10.0)
-                logger.info("✅ Задача бота завершена")
-            except asyncio.TimeoutError:
-                logger.warning("⏰ Таймаут ожидания завершения бота, отменяем задачу...")
-                bot_task.cancel()
-                try:
-                    await bot_task
-                except asyncio.CancelledError:
-                    logger.info("✅ Задача бота отменена")
+        bot_instance = SimpleBot()
+        await bot_instance.start()
             
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в main(): {e}")
     finally:
-        # Всегда останавливаем health server
         if health_server:
             await health_server.stop()
         
         if bot_instance:
             await bot_instance.stop()
 
-# ===== ЗАПУСК ПРИЛОЖЕНИЯ С БЕСКОНЕЧНЫМИ ПЕРЕЗАПУСКАМИ =====
+# ===== ЗАПУСК ПРИЛОЖЕНИЯ =====
 if __name__ == "__main__":
     import time
     
-    restart_delay = 3  # Начальная задержка в секундах
-    max_restart_delay = 300  # Максимальная задержка (5 минут)
-    total_restarts = 0  # Счетчик перезапусков для логов
+    logger.info("🚀 Запуск простого рабочего бота")
     
-    logger.info("♾️ Запуск бота с разделенным поиском и бесконечными перезапусками")
-    
-    # Бесконечный цикл перезапусков
     while True:
         try:
-            total_restarts += 1
-            logger.info(f"🔄 Запуск бота (перезапуск #{total_restarts})...")
-            
             asyncio.run(main())
-            
-            # Если main() завершился без исключения, значит бот остановился корректно
             logger.info("✅ Бот завершил работу корректно, перезапускаем через 5 секунд...")
             time.sleep(5)
-            restart_delay = 3  # Сбрасываем задержку при успешном завершении
             
         except KeyboardInterrupt:
             logger.info("⏹️ Остановка по запросу пользователя")
             break
             
-        except SystemExit as e:
-            if e.code == 0:
-                logger.info("✅ Нормальное завершение работы, перезапускаем через 5 секунд...")
-                time.sleep(5)
-                restart_delay = 3
-            else:
-                logger.error(f"🚨 Аварийное завершение с кодом {e.code}")
-                logger.info(f"⏳ Перезапуск через {restart_delay} секунд...")
-                time.sleep(restart_delay)
-                restart_delay = min(restart_delay * 1.5, max_restart_delay)
-                
         except Exception as e:
             logger.error(f"💥 Необработанное исключение: {e}")
-            logger.info(f"⏳ Перезапуск через {restart_delay} секунд...")
-            time.sleep(restart_delay)
-            restart_delay = min(restart_delay * 1.5, max_restart_delay)
-    
-    logger.info(f"👋 Бот завершил работу после {total_restarts} перезапусков")
+            logger.info("🔄 Перезапуск через 5 секунд...")
+            time.sleep(5)
